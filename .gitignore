@@ -1,0 +1,7 @@
+/build*
+/models/*.gguf
+/dumps/*.gguf
+/dumps/*.json
+__pycache__/
+*.pyc
+.venv/

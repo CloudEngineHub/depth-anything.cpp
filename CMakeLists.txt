@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.18)
+project(depth_anything VERSION 0.0.1 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(DA_BUILD_TESTS  "Build tests"                              OFF)
+option(DA_BUILD_CLI    "Build da3-cli"                            ON)
+option(DA_SHARED       "Build libdepthanything as a shared lib"   OFF)
+option(DA_GGML_CUDA    "ggml CUDA backend"                        OFF)
+option(DA_GGML_METAL   "ggml Metal backend"                       OFF)
+option(DA_GGML_VULKAN  "ggml Vulkan backend"                      OFF)
+
+set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS   OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA   ${DA_GGML_CUDA}   CACHE BOOL "" FORCE)
+set(GGML_METAL  ${DA_GGML_METAL}  CACHE BOOL "" FORCE)
+set(GGML_VULKAN ${DA_GGML_VULKAN} CACHE BOOL "" FORCE)
+add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
+
+# Source list grows as tasks land; stub keeps it linkable from T1.
+set(DA_SOURCES
+    src/stub.cpp
+)
+if(DA_SHARED)
+    add_library(depthanything SHARED ${DA_SOURCES})
+else()
+    add_library(depthanything STATIC ${DA_SOURCES})
+endif()
+target_include_directories(depthanything
+    PUBLIC  ${CMAKE_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/stb)
+target_link_libraries(depthanything PUBLIC ggml)
+
+if(DA_BUILD_CLI AND EXISTS ${CMAKE_SOURCE_DIR}/examples/cli/CMakeLists.txt)
+    add_subdirectory(examples/cli)
+endif()
+if(DA_BUILD_TESTS AND EXISTS ${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+message(STATUS "depth-anything.cpp configured")
