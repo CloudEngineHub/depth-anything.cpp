@@ -46,6 +46,7 @@ def main():
         cap[f"feat_{L}"] = f.detach().contiguous().float()
         cap[f"cam_token_{L}"] = c.detach().contiguous().float()
     cap["input_image"] = x.detach().contiguous().float()
+    cap["raw_image"] = torch.from_numpy(raw.astype(np.float32))  # (224,224,3) HWC, values 0..255
     cap["pos_embed_added"] = cap["pos_embed_added"].detach().contiguous().float()
 
     w = gguf.GGUFWriter(OUT, "reference")

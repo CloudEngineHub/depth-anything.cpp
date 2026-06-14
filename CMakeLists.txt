@@ -27,6 +27,8 @@ add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
 set(DA_SOURCES
     src/model_loader.cpp
     src/backend.cpp
+    src/image_io.cpp
+    src/preprocess.cpp
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp
