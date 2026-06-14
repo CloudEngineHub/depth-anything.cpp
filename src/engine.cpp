@@ -1,5 +1,6 @@
 #include "engine.hpp"
 #include "common.hpp"
+#include "dino_backbone.hpp"
 
 namespace da {
 std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
@@ -9,9 +10,10 @@ std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
     if (!e->ml_.offload_weights(e->be_)) { DA_LOG("engine: offload failed"); return nullptr; }
     return e;
 }
-bool Engine::backbone_features(const std::vector<float>&, int, int,
-                               std::vector<std::vector<float>>&){
-    DA_LOG("backbone_features not implemented until T16");
-    return false;
+bool Engine::backbone_features(const std::vector<float>& input_chw, int H, int W,
+                               std::vector<std::vector<float>>& feats_out){
+    DinoBackbone bb(ml_, be_);
+    std::vector<std::vector<float>> cams;
+    return bb.forward(input_chw, H, W, feats_out, cams);
 }
 } // namespace da
