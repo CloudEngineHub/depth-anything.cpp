@@ -24,9 +24,8 @@ set(GGML_METAL  ${DA_GGML_METAL}  CACHE BOOL "" FORCE)
 set(GGML_VULKAN ${DA_GGML_VULKAN} CACHE BOOL "" FORCE)
 add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
 
-# Source list grows as tasks land; stub keeps it linkable from T1.
 set(DA_SOURCES
-    src/stub.cpp
+    src/model_loader.cpp
 )
 if(DA_SHARED)
     add_library(depthanything SHARED ${DA_SOURCES})
