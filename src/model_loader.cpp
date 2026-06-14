@@ -33,6 +33,9 @@ static std::vector<float> kv_f32_arr(gguf_context* g, const char* k){
     }
     return out;
 }
+static std::string kv_str(gguf_context* g, const char* k, const char* d=""){
+    int64_t id = gguf_find_key(g,k); return id<0 ? std::string(d) : std::string(gguf_get_val_str(g,id));
+}
 
 ModelLoader::~ModelLoader(){
     if (gguf_) gguf_free(gguf_);
@@ -70,6 +73,7 @@ bool ModelLoader::load(const std::string& path){
     cfg_.out_layers      = kv_i32_arr(gguf_, DA_KV_VIT_OUT_LAYERS);
     cfg_.img_mean        = kv_f32_arr(gguf_, DA_KV_IMG_MEAN);
     cfg_.img_std         = kv_f32_arr(gguf_, DA_KV_IMG_STD);
+    cfg_.checkpoint_name = kv_str(gguf_, DA_KV_CHECKPOINT_NAME);
 
     const int64_t nt = gguf_get_n_tensors(gguf_);
     for (int64_t i=0;i<nt;++i){
