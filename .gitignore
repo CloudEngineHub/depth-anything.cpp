@@ -1,7 +1,8 @@
-/build*
-/models/*.gguf
-/dumps/*.gguf
-/dumps/*.json
+/build/
+/build-*/
+/models/
+/dumps/
+*.safetensors
 __pycache__/
 *.pyc
 .venv/
