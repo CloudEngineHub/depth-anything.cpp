@@ -13,3 +13,4 @@ endfunction()
 
 da_add_test(test_model_loader)
 da_add_test(test_backend)
+da_add_test(test_ggml_extend)
