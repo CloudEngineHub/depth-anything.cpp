@@ -30,6 +30,7 @@ set(DA_SOURCES
     src/image_io.cpp
     src/preprocess.cpp
     src/rope2d.cpp
+    src/dino_backbone.cpp
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp
