@@ -17,3 +17,6 @@ def test_convert_and_read_back():
     assert "vit.patch_embed.weight" in names
     assert "vit.blk.0.attn_qkv.weight" in names
     assert "vit.blk.11.mlp_fc2.weight" in names
+    # Regression guard: a dropped/renamed backbone tensor would slip past the
+    # spot-checks above. DA3-BASE backbone has exactly 207 tensors.
+    assert len(r.tensors) == 207, f"expected 207 backbone tensors, got {len(r.tensors)}"

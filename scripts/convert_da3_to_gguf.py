@@ -23,11 +23,11 @@ def main():
     pos_rows = bb.pos_embed.shape[1] - 1
     M = int(round(pos_rows ** 0.5))
     assert M * M == pos_rows, f"pos_embed rows {pos_rows} not a perfect square"
-    init_values = (
-        float(bb.blocks[0].ls1.gamma.detach().mean())
-        if hasattr(bb.blocks[0].ls1, "gamma")
-        else 0.0
-    )
+    # LayerScale gamma is learned per-channel and exported faithfully as the
+    # ls1/ls2 tensors; this scalar KV is informational only and not used at
+    # inference. Do NOT derive it from gamma.mean() — that averages a learned
+    # per-channel vector and bears no relation to the original init constant.
+    init_values = 0.0
     qkv_bias = bb.blocks[0].attn.qkv.bias is not None
 
     w = gguf.GGUFWriter(a.output, K.ARCH)
@@ -71,6 +71,13 @@ def main():
         written += 1
     if written == 0:
         raise SystemExit("error: no backbone tensors mapped; check rename_backbone prefix")
+    # The backbone loop iterates only backbone params, so every one should map.
+    # A nonzero skip means rename_backbone is missing a rule (e.g. a new variant's
+    # mask_token / register_tokens) and would silently drop weights — fail loudly.
+    if skipped:
+        raise SystemExit(
+            f"error: {len(skipped)} backbone param(s) unmapped (rename_backbone gap): {skipped[:5]}"
+        )
 
     w.write_header_to_file()
     w.write_kv_data_to_file()
