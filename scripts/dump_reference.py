@@ -49,6 +49,20 @@ def main():
     cap["raw_image"] = torch.from_numpy(raw.astype(np.float32))  # (224,224,3) HWC, values 0..255
     cap["pos_embed_added"] = cap["pos_embed_added"].detach().contiguous().float()
 
+    # --- 2D RoPE isolated parity fixture (Task 11) -----------------------------
+    # Uses the REAL reference module so the C++ rope is gated against ground truth.
+    from depth_anything_3.model.dinov2.layers.rope import RotaryPositionEmbedding2D
+    rope = RotaryPositionEmbedding2D(frequency=100.0)
+    hd, T = 64, 4
+    g = torch.Generator().manual_seed(1)
+    rin = torch.randn(1, 1, T, hd, generator=g)                          # (B,heads,N,hd)
+    rpos = torch.tensor([[[1, 1], [1, 2], [2, 1], [2, 2]]], dtype=torch.long)  # (1,N,2) y,x
+    with torch.no_grad():
+        rout = rope(rin, rpos)
+    cap["rope_in"] = rin.detach().contiguous().float()
+    cap["rope_out"] = rout.detach().contiguous().float()
+    cap["rope_pos"] = rpos.detach().contiguous().float()
+
     w = gguf.GGUFWriter(OUT, "reference")
     for k, v in cap.items():
         arr = np.ascontiguousarray(v.cpu().numpy().reshape(-1).astype(np.float32))
