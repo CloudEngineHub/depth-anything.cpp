@@ -12,3 +12,4 @@ function(da_add_test name)
 endfunction()
 
 da_add_test(test_model_loader)
+da_add_test(test_backend)

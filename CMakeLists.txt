@@ -26,6 +26,7 @@ add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
 
 set(DA_SOURCES
     src/model_loader.cpp
+    src/backend.cpp
 )
 if(DA_SHARED)
     add_library(depthanything SHARED ${DA_SOURCES})
