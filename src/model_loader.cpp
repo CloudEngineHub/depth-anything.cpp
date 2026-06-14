@@ -41,6 +41,11 @@ ModelLoader::~ModelLoader(){
 }
 
 bool ModelLoader::load(const std::string& path){
+    // Guard against re-entry: a second load() would otherwise leak the prior
+    // gguf/ctx and accumulate stale tensor-map entries.
+    if (gguf_) { gguf_free(gguf_); gguf_ = nullptr; }
+    if (ctx_)  { ggml_free(ctx_);  ctx_  = nullptr; }
+    tensors_.clear();
     gguf_init_params p{ /*no_alloc=*/false, /*ctx=*/&ctx_ };
     gguf_ = gguf_init_from_file(path.c_str(), p);
     if (!gguf_){ DA_LOG("gguf_init_from_file failed: %s", path.c_str()); return false; }
@@ -72,7 +77,10 @@ bool ModelLoader::load(const std::string& path){
         ggml_tensor* t = ggml_get_tensor(ctx_, nm);
         if (t) tensors_[nm] = t;
     }
-    return cfg_.embed_dim>0 && cfg_.depth>0;
+    // All four structural dims are converter-written and required by the graph
+    // (head_dim/num_heads feed attention reshapes). Gate on all of them so a
+    // malformed external GGUF fails here rather than dividing by zero later.
+    return cfg_.embed_dim>0 && cfg_.depth>0 && cfg_.num_heads>0 && cfg_.head_dim>0;
 }
 
 ggml_tensor* ModelLoader::tensor(const std::string& name) const {
