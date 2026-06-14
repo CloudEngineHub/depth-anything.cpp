@@ -31,6 +31,7 @@ set(DA_SOURCES
     src/preprocess.cpp
     src/rope2d.cpp
     src/attention.cpp
+    src/vit_block.cpp
     src/dino_backbone.cpp
     src/engine.cpp
     src/da_capi.cpp
