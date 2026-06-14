@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Build the reference DA3-BASE model and a single fixed N=1 input fixture.
 Shared by convert_da3_to_gguf.py and dump_reference.py so weights and the test
-input are identical across conversion and parity dumps."""
-import os, sys, numpy as np, torch
+input are identical across conversion and parity dumps.
+
+ENV CAVEAT (not captured by the pinned scripts/requirements.txt): importing the
+DA3 api also requires `opencv-python-headless` (cv2) and `evo` to be installed,
+and relies on `torchvision` being un-importable so the stub below takes effect
+(the only torchvision wheel compatible with this torch build is ABI-broken). A
+fresh venv must additionally run:
+    pip install opencv-python-headless evo
+    pip uninstall -y torchvision   # if a mismatched torchvision is present
+The stub assumes torchvision is never genuinely needed on the backbone path
+(true here: fixed_input normalizes in numpy, so T.Normalize is never exercised)."""
+import sys, numpy as np, torch
 sys.path.insert(0, "/tmp/da3-src/src")
 
 PATCH = 14
