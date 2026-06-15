@@ -19,10 +19,12 @@ ggml_tensor* conv2d(ggml_context* ctx, ggml_tensor* w, ggml_tensor* b, ggml_tens
     // (llamafile sgemm). A/B toggle via DA_CONV: "direct"|"im2col"|"auto" (default auto).
     const char* mode = std::getenv("DA_CONV");
     const bool kgt1 = (w->ne[0] > 1 || w->ne[1] > 1);
-    // Winograd F(2x2,3x3) is valid for 3x3 stride-1 F32 convs. Our AVX-512 GEMV
-    // beats ggml's direct conv on the warm DPT head (~205ms vs ~241ms @504,16t),
-    // parity-exact (max|d|~1e-5), so it is the AUTO default for 3x3 stride-1.
-    // See benchmarks/BENCHMARK.md. A/B via DA_CONV: winograd|direct|im2col|auto.
+    // Winograd is valid for 3x3 stride-1 F32 convs and is the AUTO default for
+    // them: it beats ggml's direct conv on the warm DPT head, parity-exact
+    // (max|d|~1.4e-5). The default kernel is the BLOCKED F(2x2) GEMM (DA_WINO=f2b,
+    // ~193ms vs direct ~242ms @504 BASE/16t; ~490ms vs ~625ms on GIANT). DA_WINO
+    // also selects f2 (per-tile GEMV) or f4 (F(4x4)). See benchmarks/BENCHMARK.md.
+    // A/B via DA_CONV: winograd|direct|im2col|auto.
     const bool wino_ok = (w->ne[0] == 3 && w->ne[1] == 3 && stride == 1 &&
                           w->type == GGML_TYPE_F32 && x->type == GGML_TYPE_F32);
     bool use_wino = wino_ok;   // auto default
