@@ -24,7 +24,8 @@ int main() {
     da::Image img; img.w = W; img.h = H; img.rgb.resize((size_t)H * W * 3);
     for (size_t i = 0; i < raw.size(); ++i) {
         float v = raw[i];
-        if (v < 0.0f) v = 0.0f; if (v > 255.0f) v = 255.0f;
+        if (v < 0.0f) v = 0.0f;
+        if (v > 255.0f) v = 255.0f;
         img.rgb[i] = (unsigned char)(v + 0.5f);
     }
 
