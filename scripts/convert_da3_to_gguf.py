@@ -57,6 +57,19 @@ def main():
     w.add_string(K.KV["img.resize_mode"], "upper_bound")
     w.add_uint32(K.KV["img.resize_target"], 504)
 
+    # --- DualDPT depth head config -------------------------------------------
+    head = net.head
+    # features = the common fusion width (out-channels of any layer{i}_rn); 128 for BASE.
+    head_features = int(head.scratch.layer1_rn.out_channels)
+    head_out_channels = [int(head.projects[i].out_channels) for i in range(4)]
+    w.add_uint32(K.KV["head.features"], head_features)
+    w.add_array(K.KV["head.out_channels"], head_out_channels)
+    w.add_uint32(K.KV["head.output_dim"], 2)
+    w.add_bool(K.KV["head.pos_embed"], bool(head.pos_embed))
+    w.add_uint32(K.KV["head.down_ratio"], int(head.down_ratio))
+    w.add_string(K.KV["head.activation"], str(head.activation))
+    w.add_string(K.KV["head.conf_activation"], str(head.conf_activation))
+
     written, skipped = 0, []
     for name, t in net.backbone.named_parameters():
         canon = name.split("pretrained.")[-1] if "pretrained." in name else name
@@ -79,11 +92,37 @@ def main():
             f"error: {len(skipped)} backbone param(s) unmapped (rename_backbone gap): {skipped[:5]}"
         )
 
+    # --- DualDPT head main-path tensors --------------------------------------
+    head_written, skipped_aux, head_unmapped = 0, [], []
+    for name, t in net.head.named_parameters():
+        g = K.rename_head(name)
+        if g is None:
+            if K.is_head_aux(name):
+                skipped_aux.append(name)
+            else:
+                head_unmapped.append(name)
+            continue
+        arr = np.ascontiguousarray(
+            t.detach().cpu().to(torch.float32).numpy(), dtype=np.float32
+        )
+        w.add_tensor(g, arr)
+        head_written += 1
+    # A non-aux unmapped head param is a real gap in rename_head and would silently
+    # drop a weight needed by the depth path -> fail loudly.
+    if head_unmapped:
+        raise SystemExit(
+            f"error: {len(head_unmapped)} head param(s) unmapped and not aux "
+            f"(rename_head gap): {head_unmapped[:8]}"
+        )
+    if head_written == 0:
+        raise SystemExit("error: no head tensors mapped; check rename_head")
+
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
     print(f"wrote {a.output}: backbone_tensors={written} skipped={len(skipped)}")
+    print(f"head_tensors={head_written} skipped_aux={len(skipped_aux)}")
 
 
 if __name__ == "__main__":
