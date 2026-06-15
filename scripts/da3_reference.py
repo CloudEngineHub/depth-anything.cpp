@@ -106,6 +106,30 @@ def fixed_input_multiview(S=2, seed=0):
     t = torch.stack(views, 0)[None].contiguous()   # (1,S,3,224,224)
     return t, raws
 
+def fixed_input_multiview_distinct(S=4, seed=0):
+    """Deterministic S-view input (1,S,3,224,224) + raw uint8 list, with STRONGLY
+    distinct per-view content so reference-view selection (S>=3, saddle_balanced)
+    yields a NON-trivial b_idx (i.e. != 0). This actually exercises the reorder /
+    restore permutation, unlike fixed_input_multiview whose near-identical phase-
+    shifted views always select view 0 (an identity reorder). seed is accepted for
+    API symmetry but the content is fully deterministic from the view index."""
+    mean = np.array([0.485, 0.456, 0.406], np.float32); std = np.array([0.229, 0.224, 0.225], np.float32)
+    yy, xx = np.mgrid[0:FIX_H, 0:FIX_W].astype(np.float32)
+    views = []; raws = []
+    for v in range(S):
+        f = 5.0 + v * 7.0
+        r = np.sin(xx / f + v * 1.3) * 0.5 + 0.5
+        g = np.cos(yy / (f * 0.6) + v * 0.7) * 0.5 + 0.5
+        b = ((xx * np.cos(0.5 * v) + yy * np.sin(0.5 * v)) / FIX_W) % 1.0
+        arr = np.stack([r, g, b], -1).astype(np.float32) * (0.4 + 0.18 * v)
+        arr[15 + v * 14:75 + v * 14, 25:85 + v * 28, :] = (v % 3) / 2.0
+        arr = np.clip(arr, 0, 1)
+        raw = (arr * 255).astype(np.uint8); raws.append(raw)
+        x = (raw.astype(np.float32) / 255.0 - mean) / std
+        views.append(torch.from_numpy(x).permute(2, 0, 1))
+    t = torch.stack(views, 0)[None].contiguous()
+    return t, raws
+
 if __name__ == "__main__":
     _, net = load_model()
     # Structural assertions: net is the DepthAnything3Net with a 12-block, 768-dim ViT.

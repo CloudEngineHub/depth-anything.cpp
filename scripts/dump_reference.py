@@ -179,6 +179,52 @@ def main():
                    "shapes": {k: list(v.shape) for k, v in mvcap.items()}}, f, indent=2)
     print("wrote dumps/reference_mv.gguf:", {k: list(v.shape) for k, v in mvcap.items()})
 
+    # ---- M4b: multi-view (S=4) reference WITH reference-view selection ----
+    # S=4 >= THRESH_FOR_REF_SELECTION(=3) so the backbone selects a reference view
+    # at layer alt_start-1 (=3), reorders, processes, and restores original order at
+    # the out-layers (dumped feats are in ORIGINAL view order).
+    import depth_anything_3.model.dinov2.vision_transformer as vt_mod
+    from scripts.da3_reference import fixed_input_multiview_distinct
+    x_mv4, raws4 = fixed_input_multiview_distinct(S=4, seed=0)
+    mv4cap = {}
+    # Monkeypatch select_reference_view to capture the chosen b_idx reliably.
+    _real_select = vt_mod.select_reference_view
+    _bidx_holder = {}
+    def _capturing_select(xx, *a, **kw):
+        bi = _real_select(xx, *a, **kw)
+        _bidx_holder["b_idx"] = int(bi.reshape(-1)[0].item())
+        return bi
+    vt_mod.select_reference_view = _capturing_select
+    try:
+        with torch.no_grad():
+            outs_mv4, _ = bb.get_intermediate_layers(
+                x_mv4, n=[5, 7, 9, 11], export_feat_layers=[],
+                ref_view_strategy="saddle_balanced")
+            full_mv4 = net(x_mv4)
+    finally:
+        vt_mod.select_reference_view = _real_select
+    assert "b_idx" in _bidx_holder, "reference-view selection did not run for S=4"
+    MV_OUT_LAYERS = [5, 7, 9, 11]
+    for L, o in zip(MV_OUT_LAYERS, outs_mv4):
+        mv4cap[f"feat_mv4_{L}"] = o[0].detach().reshape(-1).float().contiguous()   # [1,4,256,1536]->flat
+        mv4cap[f"cam_mv4_{L}"] = o[1].detach().reshape(-1).float().contiguous()    # [1,4,1536]->flat
+    mv4cap["depth_mv4"] = full_mv4["depth"].detach().reshape(-1).float().contiguous()        # [1,4,224,224]
+    mv4cap["extrinsics_mv4"] = full_mv4["extrinsics"].detach().reshape(-1).float().contiguous()  # [1,4,3,4]
+    mv4cap["intrinsics_mv4"] = full_mv4["intrinsics"].detach().reshape(-1).float().contiguous()  # [1,4,3,3]
+    for v in range(4):
+        mv4cap[f"raw_mv4_{v}"] = torch.from_numpy(raws4[v].astype(np.float32))
+    mv4cap["refsel_b_idx"] = torch.tensor([float(_bidx_holder["b_idx"])])
+    wmv4 = gguf.GGUFWriter("dumps/reference_mv4.gguf", "reference_mv4")
+    for k, v in mv4cap.items():
+        wmv4.add_tensor(k, np.ascontiguousarray(v.cpu().numpy().reshape(-1).astype(np.float32)))
+    wmv4.write_header_to_file(); wmv4.write_kv_data_to_file(); wmv4.write_tensors_to_file(); wmv4.close()
+    with open("dumps/manifest_mv4.json", "w") as f:
+        json.dump({"S": 4, "H": FIX_H, "W": FIX_W, "out_layers": MV_OUT_LAYERS,
+                   "b_idx": _bidx_holder["b_idx"],
+                   "shapes": {k: list(v.shape) for k, v in mv4cap.items()}}, f, indent=2)
+    print("wrote dumps/reference_mv4.gguf b_idx=%d:" % _bidx_holder["b_idx"],
+          {k: list(v.shape) for k, v in mv4cap.items()})
+
 
 if __name__ == "__main__":
     main()
