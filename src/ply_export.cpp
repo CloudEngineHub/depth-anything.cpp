@@ -9,7 +9,7 @@ bool write_gaussian_ply(const std::string& path, const Gaussians& g) {
     const int N = g.N;
     if (N <= 0) return false;
     if ((int)g.means.size()!=N*3 || (int)g.scales.size()!=N*3 ||
-        (int)g.rotations.size()!=N*4 || (int)g.opacities.size()!=(size_t)N ||
+        (int)g.rotations.size()!=N*4 || (int)g.opacities.size()!=N ||
         (int)g.harmonics.size()!=N*3*9) return false;
 
     std::FILE* f = std::fopen(path.c_str(), "wb");
