@@ -36,6 +36,7 @@ set(DA_SOURCES
     src/dino_backbone.cpp
     src/dpt_blocks.cpp
     src/dpt_head.cpp
+    src/depth_export.cpp
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp

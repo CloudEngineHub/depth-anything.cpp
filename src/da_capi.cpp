@@ -48,4 +48,16 @@ char* da_capi_info_json(da_ctx* c){
 }
 void da_capi_free_string(char* s){ std::free(s); }
 const char* da_capi_last_error(da_ctx* c){ return c ? c->last_error.c_str() : ""; }
+float* da_capi_depth_path(da_ctx* c, const char* image_path, int* out_h, int* out_w){
+    if (!c || !c->engine || !image_path){ if (c) c->last_error = "depth: bad args"; return nullptr; }
+    std::vector<float> depth, conf; int H = 0, W = 0;
+    if (!c->engine->depth(image_path, depth, conf, H, W)){ c->last_error = "depth: failed"; return nullptr; }
+    float* p = (float*)std::malloc(depth.size() * sizeof(float));
+    if (!p){ c->last_error = "depth: oom"; return nullptr; }
+    std::memcpy(p, depth.data(), depth.size() * sizeof(float));
+    if (out_h) *out_h = H;
+    if (out_w) *out_w = W;
+    return p;
+}
+void da_capi_free_floats(float* p){ std::free(p); }
 }

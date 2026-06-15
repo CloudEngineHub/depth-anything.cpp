@@ -12,6 +12,10 @@ void        da_capi_free(da_ctx* ctx);                           /* safe on NULL
 char*       da_capi_info_json(da_ctx* ctx);
 void        da_capi_free_string(char* s);
 const char* da_capi_last_error(da_ctx* ctx);                     /* owned by ctx, "" if none */
+/* Run depth on an image file. On success writes *out_h,*out_w and returns a malloc'd
+   float[H*W] depth map (row-major); caller frees via da_capi_free_floats. NULL on error. */
+float* da_capi_depth_path(da_ctx* ctx, const char* image_path, int* out_h, int* out_w);
+void   da_capi_free_floats(float* p);
 #ifdef __cplusplus
 }
 #endif
