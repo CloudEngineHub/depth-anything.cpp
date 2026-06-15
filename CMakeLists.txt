@@ -37,6 +37,8 @@ set(DA_SOURCES
     src/dpt_blocks.cpp
     src/dpt_head.cpp
     src/gs_head.cpp
+    src/gs_adapter.cpp
+    src/ply_export.cpp
     src/cam_pose.cpp
     src/depth_export.cpp
     src/pose_export.cpp

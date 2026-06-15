@@ -2,6 +2,7 @@
 #include "model_loader.hpp"
 #include "backend.hpp"
 #include "image_io.hpp"
+#include "gs_adapter.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +39,10 @@ public:
     // Multi-view: one backbone_mv pass over all images -> per-view depth + pose.
     // All images must preprocess to the same H,W (else returns false).
     bool depth_pose_multi(const std::vector<Image>& imgs, std::vector<ViewResult>& out, int& H, int& W);
+    // Full 3D-Gaussian reconstruction (DA3-GIANT only): backbone -> depth + cam
+    // pose + GSDPT raw_gs -> GaussianAdapter -> world-space Gaussians (N=H*W).
+    bool reconstruct(const Image& img, Gaussians& g, int& H, int& W);
+    bool reconstruct_path(const std::string& image_path, Gaussians& g, int& H, int& W);
 private:
     ModelLoader ml_;
     Backend be_;
