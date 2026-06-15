@@ -14,7 +14,7 @@ using da::conv2d;
 using da::conv_transpose2d_p0;
 
 // Run a conv gate: load input fixture [W,H,IC,1], run `build_op`, compare to expected.
-static bool gate(da::ModelLoader& ml, da::Backend& be, const char* base,
+static bool gate(da::ModelLoader& /*ml*/, da::Backend& be, const char* base,
                  const char* in_key, const char* out_key,
                  int W, int H, int IC,
                  const std::function<ggml_tensor*(ggml_context*, ggml_tensor*)>& build_op,
