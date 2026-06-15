@@ -7,13 +7,10 @@ import scripts.gguf_keys as K
 from scripts.da3_reference import load_model
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="models/DA3-BASE")
-    ap.add_argument("--output", default="models/depth-anything-base-f32.gguf")
-    a = ap.parse_args()
-
-    _, net = load_model(a.model)
+def write_da3_gguf(net, output, checkpoint_name):
+    """Write a full DepthAnything3Net (backbone + DualDPT head + cam_dec + optional
+    gs_head) to a self-contained GGUF. Reused by the nested converter for the
+    anyview (giant) branch (net.da3)."""
     bb = net.backbone.pretrained if hasattr(net.backbone, "pretrained") else net.backbone
     embed_dim = bb.embed_dim
     depth = bb.n_blocks
@@ -39,9 +36,9 @@ def main():
     init_values = 0.0
     qkv_bias = bb.blocks[0].attn.qkv.bias is not None
 
-    w = gguf.GGUFWriter(a.output, K.ARCH)
+    w = gguf.GGUFWriter(output, K.ARCH)
     w.add_string(K.KV["arch"], K.ARCH)
-    w.add_string(K.KV["checkpoint_name"], os.path.basename(a.model.rstrip("/")))
+    w.add_string(K.KV["checkpoint_name"], checkpoint_name)
     w.add_uint32(K.KV["patch_size"], 14)
     w.add_uint32(K.KV["vit.embed_dim"], int(embed_dim))
     w.add_uint32(K.KV["vit.depth"], int(depth))
@@ -195,10 +192,22 @@ def main():
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
-    print(f"wrote {a.output}: backbone_tensors={written} skipped={len(skipped)}")
+    print(f"wrote {output}: backbone_tensors={written} skipped={len(skipped)}")
     print(f"head_tensors={head_written} skipped_aux={len(skipped_aux)}")
     print(f"cam_tensors={cam_written}")
     print(f"ffn_type={ffn_type} mlp_hidden={mlp_hidden} gs_tensors={gs_written}")
+    return {"backbone": written, "head": head_written, "cam": cam_written,
+            "gs": gs_written, "ffn_type": ffn_type, "mlp_hidden": mlp_hidden}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="models/DA3-BASE")
+    ap.add_argument("--output", default="models/depth-anything-base-f32.gguf")
+    a = ap.parse_args()
+
+    _, net = load_model(a.model)
+    write_da3_gguf(net, a.output, os.path.basename(a.model.rstrip("/")))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ void print_help(){
         "usage:\n"
         "  da3-cli info  --model <gguf>\n"
         "  da3-cli depth --model <gguf> --input <img> [--pfm <out.pfm>] [--png <out.png>] [--pose <out.json>] [--no-invert]\n"
+        "  da3-cli depth --model <anyview.gguf> --metric-model <metric.gguf> --input <img> [--pfm <out.pfm>]   (nested metric-scale depth)\n"
         "  da3-cli depth --model <gguf> --input a.png --input b.png [--out-prefix out] [--no-invert]   (multi-view)\n"
         "  da3-cli reconstruct --model <giant.gguf> --input <img> --ply <out.ply> [--pose <out.json>]\n"
         "  da3-cli quantize <in.gguf> <out.gguf> <type>   (type: f16|q8_0|q6_k|q5_k|q4_k)\n");
@@ -29,6 +30,7 @@ Parsed parse(int argc, char** argv){
         for (int i=2;i<argc;++i){
             std::string a = argv[i];
             if (a == "--model" && i+1<argc){ r.model = argv[++i]; }
+            else if (a == "--metric-model" && i+1<argc){ r.metric_model = argv[++i]; }
             else if (a == "--input" && i+1<argc){ std::string in = argv[++i]; r.inputs.push_back(in); if (r.input.empty()) r.input = in; }
             else if (a == "--pfm" && i+1<argc){ r.output_pfm = argv[++i]; }
             else if (a == "--png" && i+1<argc){ r.output_png = argv[++i]; }

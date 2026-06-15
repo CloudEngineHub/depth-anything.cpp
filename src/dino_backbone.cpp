@@ -110,11 +110,19 @@ bool DinoBackbone::forward(const std::vector<float>& input_chw, int H, int W,
         x = ggml_add(ctx, x, be_.add_graph_input_nd(ctx, pool, pos.data(), pne, 2));
 
         // --- rope inputs (both position sets) + camera token input ---
-        ggml_tensor *clb,*slb,*cnb,*snb;
-        build_rope_inputs(ctx, be_, pool, rt_local,  clb, slb);
-        build_rope_inputs(ctx, be_, pool, rt_nodiff, cnb, snb);
-        const int64_t camne[2]={embed,1};
-        ggml_tensor* cam_in = be_.add_graph_input_nd(ctx, pool, cam0.data(), camne, 2);
+        // Register only inputs that some block actually consumes: an unconnected graph
+        // input has no allocated buffer at upload time (asserts). Metric ViT-L has
+        // rope_start=-1 and alt_start=-1, so neither RoPE nor the cam token is used.
+        ggml_tensor *clb=nullptr,*slb=nullptr,*cnb=nullptr,*snb=nullptr;
+        if (c.rope_start>=0){
+            build_rope_inputs(ctx, be_, pool, rt_local,  clb, slb);
+            build_rope_inputs(ctx, be_, pool, rt_nodiff, cnb, snb);
+        }
+        ggml_tensor* cam_in = nullptr;
+        if (c.alt_start>=0){
+            const int64_t camne[2]={embed,1};
+            cam_in = be_.add_graph_input_nd(ctx, pool, cam0.data(), camne, 2);
+        }
 
         ggml_tensor* local_x = x;          // last LOCAL-attention output
         for (int i=0;i<(int)c.depth;++i){
@@ -156,6 +164,21 @@ bool DinoBackbone::forward(const std::vector<float>& input_chw, int H, int W,
     };
     for (size_t o=0;o<NL;++o){
         const auto& lx=raw_local[o]; const auto& xx=raw_x[o];  // both [embed, Ntok], ne0=embed fastest
+        if (!c.cat_token){
+            // cat_token FALSE (metric ViT-L): out_x = x; feat = full vit.norm(x),
+            // token-0 stripped -> [Npatch, embed]. cam = x[token0] RAW (unused on the
+            // metric branch, but kept consistent in shape [embed]).
+            std::vector<float> camraw(embed);
+            for(int e=0;e<embed;++e) camraw[e]=xx[e];
+            cam_tokens[o]=std::move(camraw);
+            std::vector<float> f((size_t)Npatch*embed);
+            for(int t=1;t<Ntok;++t){
+                std::vector<float> no=layernorm_host(&xx[(size_t)t*embed]);
+                std::copy(no.begin(), no.end(), f.begin()+(size_t)(t-1)*embed);
+            }
+            feats[o]=std::move(f);
+            continue;
+        }
         // camera token: raw cat of token-0 halves (second half UN-normed).
         std::vector<float> camcat((size_t)2*embed);
         for(int e=0;e<embed;++e){ camcat[e]=lx[e]; camcat[embed+e]=xx[e]; }

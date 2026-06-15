@@ -40,6 +40,7 @@ set(DA_SOURCES
     src/gs_adapter.cpp
     src/ply_export.cpp
     src/cam_pose.cpp
+    src/nested.cpp
     src/depth_export.cpp
     src/pose_export.cpp
     src/engine.cpp

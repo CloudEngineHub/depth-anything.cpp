@@ -26,10 +26,17 @@ public:
                      std::vector<float>& depth_out, std::vector<float>& conf_out,
                      std::vector<std::vector<float>>& stages, std::vector<float>& fused);
 
+    // Metric single-head: dim_in = embed (cat_token false), NO head.norm (norm_type
+    // "idt"), output_dim 1 (depth only) + a parallel sky head. depth = exp(logit),
+    // sky = relu(logit). feats: 4 vectors each [N*embed]. Returns depth & sky [H*W].
+    bool depth_sky(const std::vector<std::vector<float>>& feats, int H, int W,
+                   std::vector<float>& depth_out, std::vector<float>& sky_out);
+
 private:
     bool run(const std::vector<std::vector<float>>& feats, int H, int W,
              std::vector<float>& depth_out, std::vector<float>& conf_out,
-             std::vector<std::vector<float>>* stages, std::vector<float>* fused);
+             std::vector<std::vector<float>>* stages, std::vector<float>* fused,
+             std::vector<float>* sky_out = nullptr);
     ModelLoader& ml_;
     Backend& be_;
 };
