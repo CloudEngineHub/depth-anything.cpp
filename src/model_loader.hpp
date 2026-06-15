@@ -15,6 +15,7 @@ struct Config {
     int32_t  alt_start = -1, rope_start = -1, qknorm_start = -1;
     float    init_values = 0.f, rope_freq = 100.f, ln_eps = 1e-6f, interp_offset = 0.1f;
     bool     cat_token = true, qkv_bias = true, interp_antialias = false;
+    bool     head_pos_embed = true;         // DPT head UV pos-embed (metric DPT: false)
     std::string ffn_type = "mlp";           // "mlp" | "swiglu"
     uint32_t head_features = 0;             // DPT head feature width
     std::vector<int32_t> out_layers;

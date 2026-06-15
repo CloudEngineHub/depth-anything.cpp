@@ -2,6 +2,7 @@
 #include "dpt_blocks.hpp"
 #include "uv_posembed.hpp"
 #include "ggml_extend.hpp"
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -25,13 +26,16 @@ static ggml_tensor* add_uv_input(ggml_context* ctx, Backend& be, GraphInputPool&
 
 bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
                   std::vector<float>& depth_out, std::vector<float>& conf_out,
-                  std::vector<std::vector<float>>* stages, std::vector<float>* fused) {
+                  std::vector<std::vector<float>>* stages, std::vector<float>* fused,
+                  std::vector<float>* sky_out) {
     if (feats.size() != 4) return false;
     const Config& cfg = ml_.config();
     const int patch = (int)cfg.patch_size;           // 14
     const int pw = W / patch, ph = H / patch;        // 16,16
     const int N = ph * pw;                            // 256
-    const int C = 2 * (int)cfg.embed_dim;             // dim_in = cat([local,norm]) (base 1536, giant 3072)
+    // dim_in: cat_token true -> cat([local,norm]) = 2*embed (base 1536, giant 3072);
+    // cat_token false (metric ViT-L) -> norm(x) only = embed (1024).
+    const int C = (cfg.cat_token ? 2 : 1) * (int)cfg.embed_dim;
     int oc[4] = { 96, 192, 384, 768 };                // out_channels (base default)
     if (cfg.head_out_channels.size() == 4)
         for (int s = 0; s < 4; ++s) oc[s] = cfg.head_out_channels[s];
@@ -46,31 +50,43 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
 
     auto t = [&](const std::string& n) { return ml_.tensor(n); };
 
+    // norm_type "idt" (metric) -> head.norm is nn.Identity (tensor absent): skip it.
+    const bool has_head_norm = t("head.norm.weight") != nullptr;
+    // output_dim from out2b out-channels (base 2 = depth+conf; metric 1 = depth only).
+    ggml_tensor* out2b_w = t("head.scratch.out2b.weight");
+    const int output_dim = out2b_w ? (int)out2b_w->ne[3] : 2;
+    // sky head present only on the metric DPT (norm_type idt, single depth head).
+    const bool want_sky = sky_out && t("head.scratch.sky_out2b.weight") != nullptr;
+
     std::vector<float> stage_caps[4];
     std::vector<float> fused_cap;
+    std::vector<float> sky_cap;
 
     GraphInputPool pool;
     std::vector<float> logits;
     bool ok = be_.compute([&](ggml_context* ctx) -> ggml_tensor* {
-        ggml_tensor* norm_w = t("head.norm.weight");
-        ggml_tensor* norm_b = t("head.norm.bias");
+        ggml_tensor* norm_w = has_head_norm ? t("head.norm.weight") : nullptr;
+        ggml_tensor* norm_b = has_head_norm ? t("head.norm.bias")   : nullptr;
 
         ggml_tensor* l[4];
         for (int s = 0; s < 4; ++s) {
-            // feat input [C=1536, N=256] (ne0=channel fastest, ne1=token)
+            // feat input [C, N=256] (ne0=channel fastest, ne1=token)
             const int64_t fne[2] = { C, N };
             ggml_tensor* x = be_.add_graph_input_nd(ctx, pool, feats[s].data(), fne, 2);
-            // LayerNorm over channel dim (ne0).
-            x = layernorm(ctx, x, norm_w, norm_b, eps);
+            // LayerNorm over channel dim (ne0); skipped when norm_type is "idt".
+            if (has_head_norm) x = layernorm(ctx, x, norm_w, norm_b, eps);
             // [C,N] -> [N,C] -> [W,H,C,1]  (token = h*pw + w => ne0=w, ne1=h)
             x = ggml_cont(ctx, ggml_transpose(ctx, x));      // [N,C]
             x = ggml_reshape_4d(ctx, x, pw, ph, C, 1);       // [W,H,C,1]
             // projects[s]: 1x1 conv 1536 -> oc[s]
             x = conv2d(ctx, t("head.proj." + std::to_string(s) + ".weight"),
                        t("head.proj." + std::to_string(s) + ".bias"), x, 1, 0);
-            // + 0.1 * UV pos-embed at [pw,ph,oc]
-            ggml_tensor* pe = add_uv_input(ctx, be_, pool, pw, ph, oc[s], aspect, ratio);
-            x = ggml_add(ctx, x, pe);
+            // + 0.1 * UV pos-embed at [pw,ph,oc] (only when the head uses pos_embed;
+            // the metric DPT has pos_embed=False -> skip).
+            if (cfg.head_pos_embed) {
+                ggml_tensor* pe = add_uv_input(ctx, be_, pool, pw, ph, oc[s], aspect, ratio);
+                x = ggml_add(ctx, x, pe);
+            }
             // resize_layers[s]
             if (s == 0)
                 x = conv_transpose2d_p0(ctx, t("head.resize.0.weight"),
@@ -123,26 +139,46 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
         out = conv2d(ctx, t("head.scratch.out1.weight"), t("head.scratch.out1.bias"), out, 1, 1);
         if (fused) be_.capture(out, &fused_cap);
 
-        // upsample to (H,W), + 0.1*UV(64)
-        out = interp_bilinear_ac(ctx, out, W, H);             // [224,224,feat_half]
-        ggml_tensor* pe2 = add_uv_input(ctx, be_, pool, W, H, feat_half, aspect, ratio);
-        out = ggml_add(ctx, out, pe2);
-        // output_conv2: conv 64->32 (3x3 pad1) -> relu -> conv 32->2 (1x1)
-        out = conv2d(ctx, t("head.scratch.out2a.weight"), t("head.scratch.out2a.bias"), out, 1, 1);
+        // upsample to (H,W), + 0.1*UV(64). This shared feature `feat` drives BOTH the
+        // main head and (metric) the parallel sky head (DPT._forward_impl: feat=fused).
+        out = interp_bilinear_ac(ctx, out, W, H);             // [W,H,feat_half]
+        ggml_tensor* feat = out;
+        if (cfg.head_pos_embed) {
+            ggml_tensor* pe2 = add_uv_input(ctx, be_, pool, W, H, feat_half, aspect, ratio);
+            feat = ggml_add(ctx, out, pe2);
+        }
+        // Sky head (metric): conv feat/2->32 (3x3 pad1) -> relu -> conv 32->1 (1x1).
+        if (want_sky) {
+            ggml_tensor* sk = conv2d(ctx, t("head.scratch.sky_out2a.weight"),
+                                     t("head.scratch.sky_out2a.bias"), feat, 1, 1);
+            sk = ggml_relu(ctx, sk);
+            sk = conv2d(ctx, t("head.scratch.sky_out2b.weight"),
+                        t("head.scratch.sky_out2b.bias"), sk, 1, 0);
+            be_.capture(sk, &sky_cap);
+        }
+        // output_conv2: conv feat/2->32 (3x3 pad1) -> relu -> conv 32->output_dim (1x1)
+        out = conv2d(ctx, t("head.scratch.out2a.weight"), t("head.scratch.out2a.bias"), feat, 1, 1);
         out = ggml_relu(ctx, out);
         out = conv2d(ctx, t("head.scratch.out2b.weight"), t("head.scratch.out2b.bias"), out, 1, 0);
-        return out;                                            // [W,H,2,1] logits
+        return out;                                            // [W,H,output_dim,1] logits
     }, logits);
     if (!ok) return false;
 
     const size_t HW = (size_t)H * W;
-    if (logits.size() != 2 * HW) return false;
-    // channel 0 = depth = exp(logits); channel 1 = conf = exp(logits)+1.
+    if (logits.size() != (size_t)output_dim * HW) return false;
+    // channel 0 = depth = exp(logits); channel 1 (if present) = conf = exp(logits)+1.
     depth_out.resize(HW);
-    conf_out.resize(HW);
-    for (size_t i = 0; i < HW; ++i) {
-        depth_out[i] = std::exp(logits[i]);
-        conf_out[i]  = std::exp(logits[HW + i]) + 1.0f;
+    for (size_t i = 0; i < HW; ++i) depth_out[i] = std::exp(logits[i]);
+    if (output_dim >= 2) {
+        conf_out.resize(HW);
+        for (size_t i = 0; i < HW; ++i) conf_out[i] = std::exp(logits[HW + i]) + 1.0f;
+    } else {
+        conf_out.clear();
+    }
+    if (want_sky) {
+        if (sky_cap.size() != HW) return false;
+        sky_out->resize(HW);
+        for (size_t i = 0; i < HW; ++i) sky_out->operator[](i) = std::max(0.0f, sky_cap[i]); // relu
     }
     if (stages) {
         stages->resize(4);
@@ -155,6 +191,12 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
 bool DptHead::depth(const std::vector<std::vector<float>>& feats, int H, int W,
                     std::vector<float>& depth_out, std::vector<float>& conf_out) {
     return run(feats, H, W, depth_out, conf_out, nullptr, nullptr);
+}
+
+bool DptHead::depth_sky(const std::vector<std::vector<float>>& feats, int H, int W,
+                        std::vector<float>& depth_out, std::vector<float>& sky_out) {
+    std::vector<float> conf_unused;
+    return run(feats, H, W, depth_out, conf_unused, nullptr, nullptr, &sky_out);
 }
 
 bool DptHead::depth_debug(const std::vector<std::vector<float>>& feats, int H, int W,
