@@ -116,6 +116,24 @@ def main():
     uv_emb = position_grid_to_embed(uv, 64)   # (224,224,64)
     cap["uv_embed_64"] = uv_emb.detach().float().contiguous()
 
+    # --- M3: camera pose (default cam_dec path) -------------------------------
+    # Run the FULL default forward (use_ray_pose=False -> cam_dec path) and
+    # capture: the cam_dec input (feats[-1][1] = the layer-11 camera token),
+    # the raw pose encoding (9,), and the resulting extrinsics (3x4 = w2c) and
+    # intrinsics (3x3). cam_token_in must equal the already-dumped cam_token_11.
+    pose_cap = {}
+    def cam_hook(_m, inp, out):
+        pose_cap["cam_token_in"] = inp[0].detach().clone()   # feats[-1][1] passed to cam_dec
+        pose_cap["pose_enc"] = out.detach().clone()
+    h = net.cam_dec.register_forward_hook(cam_hook)
+    with torch.no_grad():
+        full = net(x)                      # default forward: use_ray_pose=False -> cam_dec path
+    h.remove()
+    cap["pose_enc"] = pose_cap["pose_enc"].reshape(-1).float().contiguous()           # (9,)
+    cap["cam_token_in"] = pose_cap["cam_token_in"].reshape(-1).float().contiguous()   # (1536,)
+    cap["extrinsics"] = full["extrinsics"].reshape(-1).float().contiguous()           # (12,) = 3x4
+    cap["intrinsics"] = full["intrinsics"].reshape(-1).float().contiguous()           # (9,) = 3x3
+
     w = gguf.GGUFWriter(OUT, "reference")
     for k, v in cap.items():
         arr = np.ascontiguousarray(v.cpu().numpy().reshape(-1).astype(np.float32))

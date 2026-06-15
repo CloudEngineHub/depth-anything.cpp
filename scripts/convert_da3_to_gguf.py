@@ -70,6 +70,9 @@ def main():
     w.add_string(K.KV["head.activation"], str(head.activation))
     w.add_string(K.KV["head.conf_activation"], str(head.conf_activation))
 
+    # --- camera pose decoder (cam_dec MLP) config ----------------------------
+    w.add_uint32(K.KV["cam.dim_in"], 1536)
+
     written, skipped = 0, []
     for name, t in net.backbone.named_parameters():
         canon = name.split("pretrained.")[-1] if "pretrained." in name else name
@@ -117,12 +120,35 @@ def main():
     if head_written == 0:
         raise SystemExit("error: no head tensors mapped; check rename_head")
 
+    # --- camera pose decoder (cam_dec) tensors -------------------------------
+    # cam_dec is the default pose path's MLP; it has no optional/aux params, so
+    # every one of its 10 params must map (fail loudly otherwise).
+    cam_written, cam_unmapped = 0, []
+    for name, t in net.cam_dec.named_parameters():
+        g = K.rename_cam(name)
+        if g is None:
+            cam_unmapped.append(name)
+            continue
+        arr = np.ascontiguousarray(
+            t.detach().cpu().to(torch.float32).numpy(), dtype=np.float32
+        )
+        w.add_tensor(g, arr)
+        cam_written += 1
+    if cam_unmapped:
+        raise SystemExit(
+            f"error: {len(cam_unmapped)} cam_dec param(s) unmapped "
+            f"(rename_cam gap): {cam_unmapped[:8]}"
+        )
+    if cam_written == 0:
+        raise SystemExit("error: no cam_dec tensors mapped; check rename_cam")
+
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
     print(f"wrote {a.output}: backbone_tensors={written} skipped={len(skipped)}")
     print(f"head_tensors={head_written} skipped_aux={len(skipped_aux)}")
+    print(f"cam_tensors={cam_written}")
 
 
 if __name__ == "__main__":

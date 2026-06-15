@@ -35,9 +35,19 @@ def test_convert_and_read_back():
         assert h in names, f"missing head tensor {h}"
     # No aux-head tensors should leak into M2's GGUF.
     assert not any("_aux" in n for n in names), "aux-head tensors must be skipped in M2"
+    # M3 camera pose decoder (cam_dec) tensors must be present.
+    for c in (
+        "cam.bb0.weight",
+        "cam.bb2.weight",
+        "cam.fc_t.weight",
+        "cam.fc_q.weight",
+        "cam.fc_fov.weight",
+    ):
+        assert c in names, f"missing cam tensor {c}"
     # Regression guard: DA3-BASE backbone has exactly 207 tensors; the DualDPT
     # depth head adds 62 main-path tensors (norm 2 + projects 8 + resize 6 +
     # layer*_rn 4 + refinenet1..3 30 + refinenet4 6 + output_conv1/2 6).
-    BACKBONE, HEAD_MAIN = 207, 62
-    assert len(r.tensors) == BACKBONE + HEAD_MAIN, (
-        f"expected {BACKBONE + HEAD_MAIN} tensors, got {len(r.tensors)}")
+    # The cam_dec MLP adds 10 tensors (bb0/bb2/fc_t/fc_q/fc_fov, weight+bias each).
+    BACKBONE, HEAD_MAIN, CAM = 207, 62, 10
+    assert len(r.tensors) == BACKBONE + HEAD_MAIN + CAM, (
+        f"expected {BACKBONE + HEAD_MAIN + CAM} tensors, got {len(r.tensors)}")

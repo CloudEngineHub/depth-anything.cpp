@@ -35,4 +35,5 @@
 #define DA_KV_HEAD_DOWN_RATIO "depthanything3.head.down_ratio"
 #define DA_KV_HEAD_ACTIVATION "depthanything3.head.activation"
 #define DA_KV_HEAD_CONF_ACTIVATION "depthanything3.head.conf_activation"
+#define DA_KV_CAM_DIM_IN "depthanything3.cam.dim_in"
 #define DA_ARCH "depthanything3"
