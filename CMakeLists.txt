@@ -19,6 +19,11 @@ option(DA_GGML_VULKAN  "ggml Vulkan backend"                      OFF)
 set(GGML_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS   OFF CACHE BOOL "" FORCE)
+# tinyBLAS (llamafile) — a hand-tuned AVX-512/AVX2 sgemm/hgemm compiled INTO
+# ggml-cpu (static, no new runtime dep). ~28% faster inference on the matmul/
+# conv-bound forward, parity-preserving. Toggle with -DDA_GGML_LLAMAFILE=OFF.
+option(DA_GGML_LLAMAFILE "ggml tinyBLAS (llamafile) matmul kernels" ON)
+set(GGML_LLAMAFILE ${DA_GGML_LLAMAFILE} CACHE BOOL "" FORCE)
 set(GGML_CUDA   ${DA_GGML_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_METAL  ${DA_GGML_METAL}  CACHE BOOL "" FORCE)
 set(GGML_VULKAN ${DA_GGML_VULKAN} CACHE BOOL "" FORCE)

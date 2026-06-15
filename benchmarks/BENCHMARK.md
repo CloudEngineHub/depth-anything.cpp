@@ -100,3 +100,37 @@ CPU latency — PyTorch's oneDNN convolutions are ~2x faster on this CPU. Closin
 latency gap means (a) GPU offload and/or (b) a faster conv2d path for the
 patch-embed and DPT head, since convolutions — not the quantizable matmuls —
 dominate the runtime.
+
+---
+
+## CPU optimization: why the gap, and how it was narrowed (measured)
+
+**Where the time goes.** ggml runs `Conv2d` as `im2col(→F16)` + `ggml_mul_mat`, and the
+transformer backbone is pure `ggml_mul_mat`. So the whole forward is bottlenecked on
+GEMM. PyTorch (CPU) uses **oneDNN**: JIT AVX-512 GEMM microkernels and **direct/Winograd
+convolution** (no im2col memory blow-up, blocked NCHWc layouts). That conv algorithm — not
+SIMD — is the core difference (`-march=native`/AVX-512 was already on in both).
+
+**Measured wins (DA3-BASE depth @504×336, AMD Ryzen 9 9950X3D, no code/parity change):**
+
+| change | infer ms/iter | note |
+|---|--:|---|
+| baseline (llamafile OFF, 8 threads) | 831 | as shipped in the first benchmark |
+| `GGML_LLAMAFILE=ON` (tinyBLAS sgemm/hgemm) | 600 | **−28%**, free, static (no new dep) |
+| + 16 threads (box has 20 cores; 32 oversubscribes) | **538** | optimal thread count |
+| OpenBLAS (`GGML_BLAS`) instead | 556 | no win over llamafile, and adds a dynamic dep → rejected |
+
+Net: **2.0× → 1.25× slower than PyTorch** (538 vs 429 ms) with a one-line build flag +
+thread tuning, depth bit-identical (min/max 0.8595/0.9534, matching the e2e reference).
+`GGML_LLAMAFILE=ON` is now the **default** in `CMakeLists.txt` (`DA_GGML_LLAMAFILE`).
+
+Note: with llamafile on, **q4_k is no longer a latency win** (675 ms > f32 600 ms) — the
+optimized f32/f16 GEMM beats the quantized dequant-matmul path here. Quantization remains a
+size/memory win (q4_k 99 MB, 792 MB RSS vs PyTorch 1328 MB).
+
+**Closing the last 1.25× (future, in rough effort order):**
+1. Keep conv kernels in **F16** (halves the im2col GEMM bytes) — small, parity within f16.
+2. A **direct 3×3 conv** op (or Winograd) in ggml-cpu for the DPT head — avoids the im2col
+   9× expansion; this is the bulk of "what oneDNN does".
+3. Link **oneDNN / libxsmm** for the head convs — literally PyTorch's kernels (biggest dep cost).
+4. **GPU offload** (CUDA/Metal/Vulkan) — makes the CPU GEMM/conv question moot; the highest-leverage path.
