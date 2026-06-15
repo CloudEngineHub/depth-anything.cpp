@@ -2,6 +2,7 @@
 #include "engine.hpp"
 #include "depth_export.hpp"
 #include "pose_export.hpp"
+#include "quantize.hpp"
 #include <cstdio>
 #include <algorithm>
 #include <array>
@@ -60,6 +61,11 @@ static int cmd_depth(const da::cli::Parsed& p){
     if(!p.output_png.empty()) da::write_depth_png(p.output_png, depth, H, W, p.invert);
     return 0;
 }
+static int cmd_quantize(const da::cli::Parsed& p){
+    if(!da::quantize_gguf(p.q_in, p.q_out, p.q_type)){ std::fprintf(stderr,"error: quantize failed\n"); return 1; }
+    std::printf("wrote %s (%s)\n", p.q_out.c_str(), p.q_type.c_str());
+    return 0;
+}
 int main(int argc, char** argv){
     auto p = da::cli::parse(argc, argv);
     if (!p.error.empty()){ std::fprintf(stderr, "error: %s\n", p.error.c_str()); da::cli::print_help(); return 1; }
@@ -67,6 +73,7 @@ int main(int argc, char** argv){
     switch (p.sub){
         case S::Info: return cmd_info(p.model);
         case S::Depth: return cmd_depth(p);
+        case S::Quantize: return cmd_quantize(p);
         case S::Help: da::cli::print_help(); return 0;
         default: da::cli::print_help(); return 1;
     }

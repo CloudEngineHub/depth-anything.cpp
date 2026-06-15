@@ -6,7 +6,8 @@ void print_help(){
         "usage:\n"
         "  da3-cli info  --model <gguf>\n"
         "  da3-cli depth --model <gguf> --input <img> [--pfm <out.pfm>] [--png <out.png>] [--pose <out.json>] [--no-invert]\n"
-        "  da3-cli depth --model <gguf> --input a.png --input b.png [--out-prefix out] [--no-invert]   (multi-view)\n");
+        "  da3-cli depth --model <gguf> --input a.png --input b.png [--out-prefix out] [--no-invert]   (multi-view)\n"
+        "  da3-cli quantize <in.gguf> <out.gguf> <type>   (type: f16|q8_0|q6_k|q5_k|q4_k)\n");
 }
 Parsed parse(int argc, char** argv){
     Parsed r;
@@ -37,6 +38,14 @@ Parsed parse(int argc, char** argv){
         }
         if (r.model.empty()) r.error = "depth: --model required";
         else if (r.inputs.empty()) r.error = "depth: --input required";
+        return r;
+    }
+    if (first == "quantize"){
+        r.sub = Sub::Quantize;
+        std::vector<std::string> pos;
+        for (int i=2;i<argc;++i) pos.push_back(argv[i]);
+        if (pos.size() != 3){ r.error = "quantize: usage: da3-cli quantize <in.gguf> <out.gguf> <type>"; return r; }
+        r.q_in = pos[0]; r.q_out = pos[1]; r.q_type = pos[2];
         return r;
     }
     if (first == "help" || first == "-h" || first == "--help"){ r.sub = Sub::Help; return r; }

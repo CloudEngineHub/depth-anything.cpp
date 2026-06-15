@@ -42,6 +42,7 @@ set(DA_SOURCES
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp
+    src/quantize.cpp
 )
 if(DA_SHARED)
     add_library(depthanything SHARED ${DA_SOURCES})
