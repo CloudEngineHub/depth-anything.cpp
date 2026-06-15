@@ -3,6 +3,8 @@
 #include "dino_backbone.hpp"
 #include "image_io.hpp"
 #include "preprocess.hpp"
+#include <chrono>
+#include <cstdlib>
 #include "dpt_head.hpp"
 #include "cam_pose.hpp"
 #include "gs_head.hpp"
@@ -56,13 +58,23 @@ bool Engine::depth_native(const std::string& image_path, std::vector<float>& dep
 }
 bool Engine::depth_native_image(const Image& img, std::vector<float>& depth_out,
                                 std::vector<float>& conf_out, int& H, int& W){
+    const bool prof = std::getenv("DA_PROFILE") != nullptr;
+    auto now = []{ return std::chrono::high_resolution_clock::now(); };
+    auto ms = [](auto a, auto b){ return std::chrono::duration<double,std::milli>(b-a).count(); };
     Preprocessed p;
+    auto t0 = now();
     if (!preprocess_real(img, ml_.config(), p)) { DA_LOG("depth_native: preprocess_real failed"); return false; }
     H = p.H; W = p.W;
+    auto t1 = now();
     std::vector<std::vector<float>> feats;
     if (!backbone_features(p.chw, H, W, feats)) { DA_LOG("depth_native: backbone failed"); return false; }
+    auto t2 = now();
     DptHead head(ml_, be_);
-    return head.depth(feats, H, W, depth_out, conf_out);
+    bool ok = head.depth(feats, H, W, depth_out, conf_out);
+    auto t3 = now();
+    if (prof) DA_LOG("profile: preprocess=%.1fms backbone=%.1fms head=%.1fms",
+                     ms(t0,t1), ms(t1,t2), ms(t2,t3));
+    return ok;
 }
 bool Engine::depth_pose_native(const Image& img, std::vector<float>& depth, std::vector<float>& conf,
                                std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W){

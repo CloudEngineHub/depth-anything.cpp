@@ -1,4 +1,6 @@
 #include "dpt_blocks.hpp"
+#include <cstdlib>
+#include <cstring>
 
 namespace da {
 
@@ -11,7 +13,16 @@ static ggml_tensor* bias_chw(ggml_context* ctx, ggml_tensor* b) {
 ggml_tensor* conv2d(ggml_context* ctx, ggml_tensor* w, ggml_tensor* b, ggml_tensor* x,
                     int stride, int pad) {
     // w:[KW,KH,IC,OC] x:[W,H,IC,N] -> [W_out,H_out,OC,N]
-    ggml_tensor* y = ggml_conv_2d(ctx, w, x, stride, stride, pad, pad, 1, 1);
+    // Direct convolution (no im2col 9x expansion) wins for K>1 kernels — the DPT
+    // head's 3x3 convs at full resolution. 1x1 convs are pure GEMM, so keep im2col
+    // (llamafile sgemm). A/B toggle via DA_CONV: "direct"|"im2col"|"auto" (default auto).
+    const char* mode = std::getenv("DA_CONV");
+    const bool kgt1 = (w->ne[0] > 1 || w->ne[1] > 1);
+    bool direct = kgt1;  // auto: direct for 3x3, im2col for 1x1
+    if (mode) { if (!std::strcmp(mode,"direct")) direct = true; else if (!std::strcmp(mode,"im2col")) direct = false; }
+    ggml_tensor* y = direct
+        ? ggml_conv_2d_direct(ctx, w, x, stride, stride, pad, pad, 1, 1)
+        : ggml_conv_2d(ctx, w, x, stride, stride, pad, pad, 1, 1);
     if (b) y = ggml_add(ctx, y, bias_chw(ctx, b));
     return y;
 }
