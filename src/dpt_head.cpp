@@ -108,26 +108,31 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
         ggml_tensor* l3_rn = conv2d(ctx, t("head.scratch.layer3_rn.weight"), nullptr, l[2], 1, 1);
         ggml_tensor* l4_rn = conv2d(ctx, t("head.scratch.layer4_rn.weight"), nullptr, l[3], 1, 1);
 
-        // refinenet4 (no residual / no rc1): top=l4_rn, size=l3 (16x16)
+        // Fusion target sizes are the lateral-skip spatial sizes, derived from the
+        // patch grid (DPT._fuse: size=l{i}_rn.shape[2:]). The resize layers put the
+        // skips at l3=(pw,ph) [identity], l2=(2pw,2ph) [stride-2 transpose], l1=
+        // (4pw,4ph) [stride-4 transpose]. At the 224 square fixture this is the old
+        // 16/32/64; at native non-square it tracks pw,ph (e.g. 504x336 -> 36,24).
+        // refinenet4 (no residual / no rc1): top=l4_rn, size=l3 (pw,ph)
         ggml_tensor* out = feature_fusion(ctx, l4_rn, nullptr,
             nullptr, nullptr, nullptr, nullptr,
             t("head.scratch.rn4.rc2.c1.weight"), t("head.scratch.rn4.rc2.c1.bias"),
             t("head.scratch.rn4.rc2.c2.weight"), t("head.scratch.rn4.rc2.c2.bias"),
-            t("head.scratch.rn4.out.weight"), t("head.scratch.rn4.out.bias"), 16, 16);
-        // refinenet3: lateral=l3_rn, size=l2 (32x32)
+            t("head.scratch.rn4.out.weight"), t("head.scratch.rn4.out.bias"), pw, ph);
+        // refinenet3: lateral=l3_rn, size=l2 (2pw,2ph)
         out = feature_fusion(ctx, out, l3_rn,
             t("head.scratch.rn3.rc1.c1.weight"), t("head.scratch.rn3.rc1.c1.bias"),
             t("head.scratch.rn3.rc1.c2.weight"), t("head.scratch.rn3.rc1.c2.bias"),
             t("head.scratch.rn3.rc2.c1.weight"), t("head.scratch.rn3.rc2.c1.bias"),
             t("head.scratch.rn3.rc2.c2.weight"), t("head.scratch.rn3.rc2.c2.bias"),
-            t("head.scratch.rn3.out.weight"), t("head.scratch.rn3.out.bias"), 32, 32);
-        // refinenet2: lateral=l2_rn, size=l1 (64x64)
+            t("head.scratch.rn3.out.weight"), t("head.scratch.rn3.out.bias"), 2*pw, 2*ph);
+        // refinenet2: lateral=l2_rn, size=l1 (4pw,4ph)
         out = feature_fusion(ctx, out, l2_rn,
             t("head.scratch.rn2.rc1.c1.weight"), t("head.scratch.rn2.rc1.c1.bias"),
             t("head.scratch.rn2.rc1.c2.weight"), t("head.scratch.rn2.rc1.c2.bias"),
             t("head.scratch.rn2.rc2.c1.weight"), t("head.scratch.rn2.rc2.c1.bias"),
             t("head.scratch.rn2.rc2.c2.weight"), t("head.scratch.rn2.rc2.c2.bias"),
-            t("head.scratch.rn2.out.weight"), t("head.scratch.rn2.out.bias"), 64, 64);
+            t("head.scratch.rn2.out.weight"), t("head.scratch.rn2.out.bias"), 4*pw, 4*ph);
         // refinenet1: lateral=l1_rn, scale_factor 2 -> 128x128
         out = feature_fusion(ctx, out, l1_rn,
             t("head.scratch.rn1.rc1.c1.weight"), t("head.scratch.rn1.rc1.c1.bias"),

@@ -14,6 +14,9 @@ struct Parsed {
     std::string out_prefix;            // --out-prefix for multi-view outputs
     std::string q_in, q_out, q_type;   // quantize: <in.gguf> <out.gguf> <type>
     bool invert = true;
+    // Single-image depth uses the REAL DA3 native-resolution resize by default.
+    // --legacy-resize forces the old floor-to-patch path (fixture parity only).
+    bool legacy_resize = false;
     std::string error;
 };
 Parsed parse(int argc, char** argv);
