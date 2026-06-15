@@ -1,0 +1,36 @@
+# LocalAI backend-matrix entry for the Depth Anything 3 backend.
+#
+# This is a SNIPPET to merge into the LocalAI monorepo's backend/index.yaml
+# (the backend "metas" section), mirroring the locate-anything-cpp entry. The
+# concrete per-capability blocks (cpu/cuda/...) follow the same `!!merge <<:`
+# pattern used by the other ggml backends; only the CPU variant is shown.
+- &depthanything
+  name: "depth-anything"
+  alias: "depth-anything"
+  license: apache-2.0
+  description: |
+    Depth Anything 3 monocular metric depth + camera pose estimation in C/C++
+    using GGML. Loads pre-built GGUF weights and, given an image, returns a
+    dense depth map plus the recovered camera extrinsics (3x4) and intrinsics
+    (3x3). No Python at inference (purego, cgo-less).
+  urls:
+    - https://github.com/mudler/depth-anything.cpp
+    - https://huggingface.co/depth-anything/Depth-Anything-V3
+  tags:
+    - depth-estimation
+    - camera-pose
+    - depth-anything
+    - gpu
+    - cpu
+  capabilities:
+    default: "cpu-depth-anything-cpp"
+    nvidia: "cuda12-depth-anything-cpp"
+    nvidia-cuda-12: "cuda12-depth-anything-cpp"
+    nvidia-cuda-13: "cuda13-depth-anything-cpp"
+    intel: "intel-sycl-f32-depth-anything-cpp"
+    vulkan: "vulkan-depth-anything-cpp"
+- !!merge <<: *depthanything
+  name: "cpu-depth-anything-cpp"
+  uri: "quay.io/go-skynet/local-ai-backends:latest-cpu-depth-anything-cpp"
+  mirrors:
+    - localai/localai-backends:latest-cpu-depth-anything-cpp

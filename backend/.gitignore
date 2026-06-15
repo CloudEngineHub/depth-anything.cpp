@@ -1,0 +1,8 @@
+# Build artifacts — never commit binaries, shared libs, models or outputs.
+da3-grpc
+*.so
+*.gguf
+*.png
+sources/
+build*/
+package/

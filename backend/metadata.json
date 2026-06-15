@@ -1,0 +1,6 @@
+{
+  "name": "depth-anything",
+  "description": "Depth Anything 3 monocular depth + camera pose (C++/ggml + purego, no Python). Exposes depth via GenerateImage (src image -> normalized depth PNG) and Predict (JSON depth stats + extrinsics/intrinsics).",
+  "capabilities": ["depth-estimation", "camera-pose"],
+  "uri": "quay.io/go-skynet/local-ai-backends:latest-cpu-depth-anything-cpp"
+}

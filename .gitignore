@@ -6,3 +6,8 @@
 __pycache__/
 *.pyc
 .venv/
+# Go build artifacts
+*.test
+*.out
+backend/go/vendor/
+backend/go/**/*.so
