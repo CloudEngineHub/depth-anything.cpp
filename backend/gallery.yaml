@@ -1,0 +1,40 @@
+# LocalAI gallery entry for the Depth Anything 3 backend.
+#
+# Add this entry to the LocalAI model gallery (gallery/index.yaml). It pairs the
+# `depth-anything` backend with a GGUF model and exposes monocular depth +
+# camera pose. Depth has no native OpenAI endpoint, so call the backend through
+# the /v1/images/generations-style GenerateImage path (src image -> depth PNG
+# at dst) or Predict (JSON depth stats + extrinsics/intrinsics).
+#
+# Replace the `uri`/`sha256` placeholders with the published GGUF once the
+# weights are uploaded to Hugging Face.
+- name: depth-anything-3-base
+  url: github:mudler/LocalAI/gallery/virtual.yaml@master
+  urls:
+    - https://github.com/mudler/depth-anything.cpp
+    - https://huggingface.co/depth-anything/Depth-Anything-V3
+    - https://huggingface.co/mudler/depth-anything.cpp-gguf
+  description: |
+    Depth Anything 3 (base) monocular metric depth + camera pose, served via the
+    native depth-anything.cpp backend (C++/ggml + purego, no Python). Given an
+    image it returns a dense depth map plus the recovered camera extrinsics
+    (3x4) and intrinsics (3x3). Use GenerateImage (src -> normalized depth PNG
+    at dst) or Predict (JSON: depth_w/depth_h/depth_min/depth_max + pose).
+    Q4_K is the recommended default for CPU; F32 for maximum fidelity.
+  license: apache-2.0
+  icon: https://avatars.githubusercontent.com/u/53104118?s=200&v=4
+  tags:
+    - depth-estimation
+    - camera-pose
+    - depth-anything
+    - native
+    - cpp
+    - cpu
+  overrides:
+    backend: depth-anything
+    parameters:
+      model: depth-anything-base-q4_k.gguf
+  files:
+    - filename: depth-anything-base-q4_k.gguf
+      uri: huggingface://mudler/depth-anything.cpp-gguf/depth-anything-base-q4_k.gguf
+      sha256: "" # TODO: fill in once the GGUF is published
