@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <vector>
+#include <chrono>
 static int cmd_info(const std::string& model){
     auto eng = da::Engine::load(model, 1);
     if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
@@ -57,9 +58,49 @@ static int cmd_depth_metric(const da::cli::Parsed& p){
     }
     return 0;
 }
+// Bench hook: load once, run depth p.repeat times, print load + per-iter timing,
+// and exit. Single-image depth only (no pose/metric/multiview). Gives clean
+// inference-only timing without the per-subprocess model reload overhead.
+static int cmd_depth_bench(const da::cli::Parsed& p){
+    using clk = std::chrono::steady_clock;
+    auto t0 = clk::now();
+    auto eng = da::Engine::load(p.model, p.n_threads);
+    auto t1 = clk::now();
+    if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
+    const bool native = !p.legacy_resize;
+    const bool with_pose = !p.output_pose.empty();
+    std::vector<double> ms; ms.reserve(p.repeat);
+    std::vector<float> depth, conf; int H = 0, W = 0;
+    std::array<float,12> ext; std::array<float,9> intr;
+    for (int it = 0; it < p.repeat; ++it){
+        auto a = clk::now();
+        bool ok;
+        if (with_pose){
+            ok = native ? eng->depth_pose_native_path(p.input, depth, conf, ext, intr, H, W)
+                        : eng->depth_pose_path(p.input, depth, conf, ext, intr, H, W);
+        } else {
+            ok = native ? eng->depth_native(p.input, depth, conf, H, W)
+                        : eng->depth(p.input, depth, conf, H, W);
+        }
+        auto b = clk::now();
+        if (!ok){ std::fprintf(stderr, "error: %s failed\n", with_pose ? "depth_pose" : "depth"); return 1; }
+        ms.push_back(std::chrono::duration<double, std::milli>(b - a).count());
+    }
+    double load_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::vector<double> sorted = ms; std::sort(sorted.begin(), sorted.end());
+    double median = sorted[sorted.size()/2];
+    double p90 = sorted[(size_t)(sorted.size()*0.9) < sorted.size() ? (size_t)(sorted.size()*0.9) : sorted.size()-1];
+    double minv = sorted.front(), maxv = sorted.back();
+    std::printf("bench: out=%dx%d threads=%d load=%.1fms infer=%.1fms/iter "
+                "(median over %d, min=%.1f max=%.1f p90=%.1f)\n",
+                W, H, p.n_threads > 0 ? p.n_threads : 1, load_ms, median, p.repeat,
+                minv, maxv, p90);
+    return 0;
+}
 static int cmd_depth(const da::cli::Parsed& p){
     if (!p.metric_model.empty()) return cmd_depth_metric(p);
-    auto eng = da::Engine::load(p.model, 0);
+    if (p.repeat > 0 && p.inputs.size() <= 1) return cmd_depth_bench(p);
+    auto eng = da::Engine::load(p.model, p.n_threads);
     if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
     if (p.inputs.size() > 1) return cmd_depth_multi(p, *eng);
     std::vector<float> depth, conf; int H,W;

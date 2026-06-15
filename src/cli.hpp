@@ -13,6 +13,8 @@ struct Parsed {
     std::vector<std::string> inputs;   // accumulates repeated --input; >1 => multi-view mode
     std::string out_prefix;            // --out-prefix for multi-view outputs
     std::string q_in, q_out, q_type;   // quantize: <in.gguf> <out.gguf> <type>
+    int n_threads = 0;                 // --threads N (0 => engine default of 1)
+    int repeat    = 0;                 // --repeat N  (bench hook: time N inferences, then exit)
     bool invert = true;
     // Single-image depth uses the REAL DA3 native-resolution resize by default.
     // --legacy-resize forces the old floor-to-patch path (fixture parity only).
