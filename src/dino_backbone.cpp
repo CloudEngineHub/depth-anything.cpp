@@ -174,7 +174,154 @@ bool DinoBackbone::forward(const std::vector<float>& input_chw, int H, int W,
     return true;
 }
 
+// Pass-A: run the per-view LOCAL blocks [0,upto) (no cross-view mixing, since
+// global attention starts at alt_start > upto here) and capture token-0 (cls) of
+// each view's output. Used to drive reference-view selection at layer alt_start-1.
+bool DinoBackbone::capture_local_cls(const std::vector<std::vector<float>>& views_chw, int H, int W,
+                                     int upto, std::vector<std::vector<float>>& cls_out){
+    const auto& c = ml_.config();
+    const int patch=(int)c.patch_size, gh=H/patch, gw=W/patch;
+    const int embed=(int)c.embed_dim, heads=(int)c.num_heads, hd=(int)c.head_dim;
+    const int Npatch=gh*gw, Ntok=1+Npatch;
+    const int S=(int)views_chw.size();
+    const float eps=c.ln_eps;
+
+    std::vector<float> pos_local(2*Ntok, 0.f);
+    for (int t=1;t<Ntok;++t){ int idx=t-1; int row=idx/gw, col=idx%gw;
+        pos_local[2*t+0]=(float)(row+1); pos_local[2*t+1]=(float)(col+1); }
+    RopeTables rt_local = build_rope_tables(pos_local, Ntok, hd, c.rope_freq);
+    std::vector<float> pos = interp_pos_embed(gh, gw);
+
+    std::vector<std::vector<float>> cap_view(S);   // each [embed,Ntok]
+    GraphInputPool pool; std::vector<float> throwaway;
+    bool ok = be_.forward_capture([&](ggml_context* ctx) -> ggml_tensor* {
+        const int64_t pne[2]={embed, Ntok};
+        ggml_tensor* pe = be_.add_graph_input_nd(ctx, pool, pos.data(), pne, 2);
+        // Only register RoPE inputs if a local layer in [0,upto) actually uses them
+        // (otherwise the unconnected graph input has no buffer at upload time).
+        ggml_tensor *clb=nullptr,*slb=nullptr;
+        const bool any_rope = (c.rope_start>=0 && c.rope_start<upto);
+        if (any_rope) build_rope_inputs(ctx, be_, pool, rt_local, clb, slb);
+        ggml_tensor* last = nullptr;
+        for (int s=0;s<S;++s){
+            const int64_t ine[4]={W,H,3,1};
+            ggml_tensor* img = be_.add_graph_input_nd(ctx, pool, views_chw[s].data(), ine, 4);
+            ggml_tensor* xv = ggml_conv_2d(ctx, ml_.tensor("vit.patch_embed.weight"), img, patch,patch,0,0,1,1);
+            xv = ggml_reshape_2d(ctx, xv, (int64_t)Npatch, embed);
+            xv = ggml_cont(ctx, ggml_transpose(ctx, xv));
+            xv = ggml_add(ctx, xv, ml_.tensor("vit.patch_embed.bias"));
+            ggml_tensor* cls = ggml_reshape_2d(ctx, ml_.tensor("vit.cls_token"), embed, 1);
+            xv = ggml_concat(ctx, cls, xv, 1);
+            xv = ggml_add(ctx, xv, pe);
+            for (int i=0;i<upto;++i){
+                const bool use_rope = (c.rope_start>=0 && i>=c.rope_start);
+                ggml_tensor* cb = use_rope? clb : nullptr;
+                ggml_tensor* sb = use_rope? slb : nullptr;
+                BlockWeights bw = load_block(ml_, i);
+                xv = vit_block(ctx, xv, bw, heads, hd, eps, cb, sb);
+            }
+            be_.capture(xv, &cap_view[s]);
+            last = xv;
+        }
+        return last;
+    }, throwaway);
+    if (!ok) return false;
+    cls_out.assign(S, {});
+    for (int s=0;s<S;++s){
+        cls_out[s].assign(cap_view[s].begin(), cap_view[s].begin()+embed); // token-0 = first row
+    }
+    return true;
+}
+
+// saddle_balanced: select the view whose {avg cosine-sim to others, cls L2-norm,
+// variance of normalized cls} are jointly closest to the per-metric median (0.5).
+int DinoBackbone::select_reference_view_saddle(const std::vector<std::vector<float>>& cls, int embed) const {
+    const int S=(int)cls.size();
+    if (S<=1) return 0;
+    std::vector<double> norm(S, 0.0);
+    std::vector<std::vector<double>> cn(S, std::vector<double>(embed, 0.0)); // normalized cls
+    for (int v=0;v<S;++v){
+        double n=0; for (int e=0;e<embed;++e){ double d=cls[v][e]; n+=d*d; }
+        n=std::sqrt(n); norm[v]=n;
+        double inv = (n>0)? 1.0/n : 0.0;
+        for (int e=0;e<embed;++e) cn[v][e]=cls[v][e]*inv;
+    }
+    // sim_score[v] = mean over w!=v of cos(cn[v],cn[w])  (diag removed; sum/(S-1))
+    std::vector<double> sim_score(S,0.0), feat_norm(S,0.0), feat_var(S,0.0);
+    for (int v=0;v<S;++v){
+        double s=0;
+        for (int w=0;w<S;++w){ if (w==v) continue; double dot=0;
+            for (int e=0;e<embed;++e) dot+=cn[v][e]*cn[w][e]; s+=dot; }
+        sim_score[v]=s/(double)(S-1);
+        feat_norm[v]=norm[v];
+        // variance of NORMALIZED cls over channels (torch .var default: unbiased, /(C-1))
+        double mean=0; for (int e=0;e<embed;++e) mean+=cn[v][e]; mean/=embed;
+        double var=0; for (int e=0;e<embed;++e){ double d=cn[v][e]-mean; var+=d*d; }
+        feat_var[v]=var/(double)(embed-1);
+    }
+    auto norm01=[&](std::vector<double>& m){
+        double mn=m[0], mx=m[0];
+        for (double v: m){ mn=std::min(mn,v); mx=std::max(mx,v); }
+        for (double& v: m) v=(v-mn)/(mx-mn+1e-8);
+    };
+    norm01(sim_score); norm01(feat_norm); norm01(feat_var);
+    int best=0; double bestbal=1e300;
+    for (int v=0;v<S;++v){
+        double bal = std::fabs(sim_score[v]-0.5)+std::fabs(feat_norm[v]-0.5)+std::fabs(feat_var[v]-0.5);
+        if (bal<bestbal){ bestbal=bal; best=v; }
+    }
+    return best;
+}
+
 bool DinoBackbone::forward_mv(const std::vector<std::vector<float>>& views_chw, int H, int W,
+                              std::vector<std::vector<std::vector<float>>>& feats,
+                              std::vector<std::vector<std::vector<float>>>& cam_tokens,
+                              int* out_b_idx){
+    const auto& c = ml_.config();
+    const int S=(int)views_chw.size();
+    const int THRESH_FOR_REF_SELECTION = 3;
+    // S < threshold (or no alt path): no reference-view selection -> direct forward.
+    if (S < THRESH_FOR_REF_SELECTION || c.alt_start < 0){
+        if (out_b_idx) *out_b_idx = 0;
+        return forward_mv_ordered(views_chw, H, W, feats, cam_tokens);
+    }
+
+    // --- Pass A: select reference view from layer-(alt_start-1) input = output of
+    //     block (alt_start-2). Run per-view LOCAL blocks [0, alt_start-1). ---
+    const int embed=(int)c.embed_dim;
+    std::vector<std::vector<float>> cls;
+    if (!capture_local_cls(views_chw, H, W, c.alt_start-1, cls)) return false;
+    int b_idx = select_reference_view_saddle(cls, embed);
+    if (out_b_idx) *out_b_idx = b_idx;
+
+    // reorder_by_reference: position 0 <- b_idx; positions 1..b_idx <- 0..b_idx-1;
+    // positions >b_idx unchanged.
+    std::vector<int> reorder(S);
+    reorder[0]=b_idx;
+    for (int p=1;p<S;++p) reorder[p] = (p<=b_idx)? (p-1) : p;
+    std::vector<std::vector<float>> rv(S);
+    for (int p=0;p<S;++p) rv[p]=views_chw[reorder[p]];
+
+    // --- Pass B: full forward on reordered views (ref at position 0). ---
+    std::vector<std::vector<std::vector<float>>> rfeats, rcams;
+    if (!forward_mv_ordered(rv, H, W, rfeats, rcams)) return false;
+
+    // restore_original_order: target t<b_idx <- current t+1; target b_idx <- current 0;
+    // target t>b_idx <- current t.
+    std::vector<int> restore(S);
+    for (int t=0;t<S;++t) restore[t] = (t<b_idx)? (t+1) : t;
+    restore[b_idx]=0;
+    const size_t NL = rfeats.size();
+    feats.assign(NL, std::vector<std::vector<float>>(S));
+    cam_tokens.assign(NL, std::vector<std::vector<float>>(S));
+    for (size_t o=0;o<NL;++o) for (int t=0;t<S;++t){
+        feats[o][t]      = rfeats[o][restore[t]];
+        cam_tokens[o][t] = rcams[o][restore[t]];
+    }
+    return true;
+}
+
+bool DinoBackbone::forward_mv_ordered(const std::vector<std::vector<float>>& views_chw, int H, int W,
                               std::vector<std::vector<std::vector<float>>>& feats,
                               std::vector<std::vector<std::vector<float>>>& cam_tokens){
     const auto& c = ml_.config();
