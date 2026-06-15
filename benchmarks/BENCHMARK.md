@@ -157,3 +157,22 @@ DA3-BASE depth @504×336, 16 threads, parity-exact (max|d|=5.96e-08 vs im2col):
 `GGML_LLAMAFILE` + 16 threads + direct conv → **495 ms warm (1.68× faster than the start)**,
 **0.72 s cold**, **665 MB peak** (half of PyTorch's 1328 MB). vs PyTorch warm 429 ms = 1.15×
 slower but with half the memory and faster load/cold — and the same correctness.
+
+---
+
+## CPU profiling #3: warm split + what does NOT help
+
+Warm steady-state stage split (DA3-BASE @504, 16 threads, direct conv) is now **balanced**:
+backbone ≈ 228 ms (matmuls, llamafile sgemm), head ≈ 255 ms (convs, tiled direct).
+
+Measured **negative results** (so we don't chase them again):
+- **F16 matmul weights** (`quantize f16`): backbone 228→224 ms (~2%), total 497→485 ms, and
+  corr drops to 0.999995. llamafile's F32 AVX-512 sgemm is already near-optimal for these shapes;
+  not bandwidth-bound. Rejected (accuracy cost, negligible gain).
+- **F16 conv kernels** (tiled-conv inner hgemm): head unchanged (~260 ms). The conv is
+  **compute-bound on GEMM FLOPs**, not kernel bandwidth. Rejected.
+
+Conclusion: the remaining CPU lever is **fewer conv FLOPs** — i.e. **Winograd F(2×2,3×3)** for the
+head's 3×3 convs (2.25× fewer multiplies, the algorithm oneDNN uses). Caveat: it only wins if the
+Winograd-domain GEMM is as well-vectorized as ggml's llamafile kernel — a naive Winograd can lose
+despite fewer FLOPs. Approach: implement, measure, keep only if faster AND parity holds.
