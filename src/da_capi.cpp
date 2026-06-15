@@ -70,4 +70,30 @@ int da_capi_pose_path(da_ctx* c, const char* image_path, float out_ext[12], floa
     if (out_intr) std::memcpy(out_intr, intr.data(),  9 * sizeof(float));
     return 0;
 }
+float* da_capi_depth_pose_multi(da_ctx* c, const char** image_paths, int n_images,
+                                int* out_h, int* out_w, int* out_n,
+                                float* out_ext, float* out_intr){
+    if (!c || !c->engine || !image_paths || n_images <= 0){ if (c) c->last_error = "depth_multi: bad args"; return nullptr; }
+    std::vector<da::Image> imgs(n_images);
+    for (int i = 0; i < n_images; ++i){
+        if (!image_paths[i] || !da::load_image_rgb(image_paths[i], imgs[i])){
+            c->last_error = "depth_multi: load image failed"; return nullptr;
+        }
+    }
+    std::vector<da::ViewResult> views; int H = 0, W = 0;
+    if (!c->engine->depth_pose_multi(imgs, views, H, W)){ c->last_error = "depth_multi: failed"; return nullptr; }
+    const int n = (int)views.size();
+    const size_t per = (size_t)H * W;
+    float* p = (float*)std::malloc((size_t)n * per * sizeof(float));
+    if (!p){ c->last_error = "depth_multi: oom"; return nullptr; }
+    for (int i = 0; i < n; ++i){
+        std::memcpy(p + (size_t)i * per, views[i].depth.data(), per * sizeof(float));
+        if (out_ext)  std::memcpy(out_ext  + (size_t)i * 12, views[i].ext.data(),  12 * sizeof(float));
+        if (out_intr) std::memcpy(out_intr + (size_t)i * 9,  views[i].intr.data(),  9 * sizeof(float));
+    }
+    if (out_h) *out_h = H;
+    if (out_w) *out_w = W;
+    if (out_n) *out_n = n;
+    return p;
+}
 }

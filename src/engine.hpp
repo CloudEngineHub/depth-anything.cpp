@@ -10,6 +10,13 @@
 namespace da {
 enum class TaskMode { DEPTH, DEPTH_POSE, MULTIVIEW, RECONSTRUCT, NESTED_METRIC };
 
+// Per-view result of the multi-view pipeline.
+struct ViewResult {
+    std::vector<float> depth, conf;  // each [H*W] row-major
+    std::array<float,12> ext;        // 3x4 row-major
+    std::array<float,9>  intr;       // 3x3 row-major
+};
+
 class Engine {
 public:
     static std::unique_ptr<Engine> load(const std::string& gguf_path, int n_threads);
@@ -28,6 +35,9 @@ public:
                     std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);
     bool depth_pose_path(const std::string& image_path, std::vector<float>& depth, std::vector<float>& conf,
                          std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);
+    // Multi-view: one backbone_mv pass over all images -> per-view depth + pose.
+    // All images must preprocess to the same H,W (else returns false).
+    bool depth_pose_multi(const std::vector<Image>& imgs, std::vector<ViewResult>& out, int& H, int& W);
 private:
     ModelLoader ml_;
     Backend be_;
