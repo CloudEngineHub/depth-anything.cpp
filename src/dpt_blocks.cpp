@@ -1,4 +1,5 @@
 #include "dpt_blocks.hpp"
+#include "winograd.hpp"
 #include <cstdlib>
 #include <cstring>
 
@@ -18,11 +19,24 @@ ggml_tensor* conv2d(ggml_context* ctx, ggml_tensor* w, ggml_tensor* b, ggml_tens
     // (llamafile sgemm). A/B toggle via DA_CONV: "direct"|"im2col"|"auto" (default auto).
     const char* mode = std::getenv("DA_CONV");
     const bool kgt1 = (w->ne[0] > 1 || w->ne[1] > 1);
-    bool direct = kgt1;  // auto: direct for 3x3, im2col for 1x1
-    if (mode) { if (!std::strcmp(mode,"direct")) direct = true; else if (!std::strcmp(mode,"im2col")) direct = false; }
-    ggml_tensor* y = direct
-        ? ggml_conv_2d_direct(ctx, w, x, stride, stride, pad, pad, 1, 1)
-        : ggml_conv_2d(ctx, w, x, stride, stride, pad, pad, 1, 1);
+    // Winograd F(2x2,3x3) is valid for 3x3 stride-1 F32 convs. Our AVX-512 GEMV
+    // beats ggml's direct conv on the warm DPT head (~205ms vs ~241ms @504,16t),
+    // parity-exact (max|d|~1e-5), so it is the AUTO default for 3x3 stride-1.
+    // See benchmarks/BENCHMARK.md. A/B via DA_CONV: winograd|direct|im2col|auto.
+    const bool wino_ok = (w->ne[0] == 3 && w->ne[1] == 3 && stride == 1 &&
+                          w->type == GGML_TYPE_F32 && x->type == GGML_TYPE_F32);
+    bool use_wino = wino_ok;   // auto default
+    bool direct = kgt1;        // im2col for 1x1, direct otherwise (non-winograd path)
+    if (mode) {
+        if (!std::strcmp(mode,"winograd"))   { use_wino = wino_ok; }
+        else if (!std::strcmp(mode,"direct")){ use_wino = false; direct = true; }
+        else if (!std::strcmp(mode,"im2col")){ use_wino = false; direct = false; }
+        // "auto" (or anything else) keeps the winograd auto default.
+    }
+    ggml_tensor* y;
+    if (use_wino)      y = winograd_conv3x3(ctx, w, x, pad);
+    else if (direct)   y = ggml_conv_2d_direct(ctx, w, x, stride, stride, pad, pad, 1, 1);
+    else               y = ggml_conv_2d(ctx, w, x, stride, stride, pad, pad, 1, 1);
     if (b) y = ggml_add(ctx, y, bias_chw(ctx, b));
     return y;
 }

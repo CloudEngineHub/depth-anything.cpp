@@ -157,3 +157,47 @@ DA3-BASE depth @504×336, 16 threads, parity-exact (max|d|=5.96e-08 vs im2col):
 `GGML_LLAMAFILE` + 16 threads + direct conv → **495 ms warm (1.68× faster than the start)**,
 **0.72 s cold**, **665 MB peak** (half of PyTorch's 1328 MB). vs PyTorch warm 429 ms = 1.15×
 slower but with half the memory and faster load/cold — and the same correctness.
+
+---
+
+## CPU profiling #3: warm split + what does NOT help
+
+Warm steady-state stage split (DA3-BASE @504, 16 threads, direct conv) is now **balanced**:
+backbone ≈ 228 ms (matmuls, llamafile sgemm), head ≈ 255 ms (convs, tiled direct).
+
+Measured **negative results** (so we don't chase them again):
+- **F16 matmul weights** (`quantize f16`): backbone 228→224 ms (~2%), total 497→485 ms, and
+  corr drops to 0.999995. llamafile's F32 AVX-512 sgemm is already near-optimal for these shapes;
+  not bandwidth-bound. Rejected (accuracy cost, negligible gain).
+- **F16 conv kernels** (tiled-conv inner hgemm): head unchanged (~260 ms). The conv is
+  **compute-bound on GEMM FLOPs**, not kernel bandwidth. Rejected.
+
+Conclusion: the remaining CPU lever is **fewer conv FLOPs** — i.e. **Winograd F(2×2,3×3)** for the
+head's 3×3 convs (2.25× fewer multiplies, the algorithm oneDNN uses). Caveat: it only wins if the
+Winograd-domain GEMM is as well-vectorized as ggml's llamafile kernel — a naive Winograd can lose
+despite fewer FLOPs. Approach: implement, measure, keep only if faster AND parity holds.
+
+## CPU optimization #4: Winograd F(2×2,3×3) conv (DPT head) — **shipped, faster**
+
+Implemented `src/winograd.cpp`: a CPU Winograd F(2×2,3×3) custom op (`ggml_custom_4d`)
+wired into `src/dpt_blocks.cpp::conv2d` for **3×3 stride-1 F32** convs (all the DPT head's
+reassemble/fusion/output 3×3 convs). The exact transforms (`B^T d B`, `G g G^T`, `A^T m A`,
+halves+integers) reduce the 9-multiply 3×3 conv to a **16-position elementwise multiply**
+(2.25× fewer multiplies). The hot path — the winograd-domain multiply
+`M[ξν][oc] = Σ_IC U[oc][ic][ξν]·V[ic][ξν]` — is laid out **OC-innermost** and vectorized with
+an **AVX-512 FMA GEMV** (16-wide over OC, broadcasting V). The filter transform `U` is computed
+once and cached by filter pointer across forwards; tiles×batch are threaded via `(ith,nth)`.
+
+It **wins** (DA3-BASE @504, 16 threads, `--repeat 12`, median; warm-head median over iters 2..N):
+
+| DA_CONV | warm head ms | total infer ms |
+|---|---|---|
+| `direct` (prev default) | ~242 | ~492 |
+| `winograd` (**new auto default**) | **~205** | **~450** |
+
+~**15% faster head**, ~**8% faster total** (≈40 ms/iter), reproducible across trials.
+Parity is **exact**: `test_winograd` (random 128×96, IC=OC=64) gives max|d|=**1.4e-5** vs
+`ggml_conv_2d_direct` (≪ the 2e-3 gate), and all 29 model-parity tests stay green with winograd
+active. So Winograd is now the **auto default** for 3×3 stride-1 convs; `DA_CONV=direct` (or
+`im2col`) still selects the old paths for A/B. The win confirms the lever was conv FLOPs, and that
+a carefully-vectorized Winograd GEMV can beat ggml's already-tuned llamafile direct conv here.
