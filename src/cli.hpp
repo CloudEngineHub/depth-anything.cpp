@@ -6,6 +6,7 @@ struct Parsed {
     Sub sub = Sub::None;
     std::string model;
     std::string input, output_pfm, output_png;
+    std::string output_pose;
     bool invert = true;
     std::string error;
 };

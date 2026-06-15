@@ -38,6 +38,7 @@ set(DA_SOURCES
     src/dpt_head.cpp
     src/cam_pose.cpp
     src/depth_export.cpp
+    src/pose_export.cpp
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp

@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <array>
+#include <vector>
 
 struct da_ctx { std::unique_ptr<da::Engine> engine; std::string last_error; };
 
@@ -60,4 +62,12 @@ float* da_capi_depth_path(da_ctx* c, const char* image_path, int* out_h, int* ou
     return p;
 }
 void da_capi_free_floats(float* p){ std::free(p); }
+int da_capi_pose_path(da_ctx* c, const char* image_path, float out_ext[12], float out_intr[9]){
+    if (!c || !c->engine || !image_path){ if (c) c->last_error = "pose: bad args"; return -1; }
+    std::vector<float> depth, conf; std::array<float,12> ext; std::array<float,9> intr; int H = 0, W = 0;
+    if (!c->engine->depth_pose_path(image_path, depth, conf, ext, intr, H, W)){ c->last_error = "pose: failed"; return -1; }
+    if (out_ext)  std::memcpy(out_ext,  ext.data(),  12 * sizeof(float));
+    if (out_intr) std::memcpy(out_intr, intr.data(),  9 * sizeof(float));
+    return 0;
+}
 }

@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <array>
 
 namespace da {
 enum class TaskMode { DEPTH, DEPTH_POSE, MULTIVIEW, RECONSTRUCT, NESTED_METRIC };
@@ -22,6 +23,11 @@ public:
                std::vector<float>& conf_out, int& H, int& W);
     bool depth_image(const Image& img, std::vector<float>& depth_out,
                      std::vector<float>& conf_out, int& H, int& W);
+    // Full pipeline incl pose. ext = 3x4 row-major (12), intr = 3x3 row-major (9).
+    bool depth_pose(const Image& img, std::vector<float>& depth, std::vector<float>& conf,
+                    std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);
+    bool depth_pose_path(const std::string& image_path, std::vector<float>& depth, std::vector<float>& conf,
+                         std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);
 private:
     ModelLoader ml_;
     Backend be_;

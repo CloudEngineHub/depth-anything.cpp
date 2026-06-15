@@ -16,6 +16,8 @@ const char* da_capi_last_error(da_ctx* ctx);                     /* owned by ctx
    float[H*W] depth map (row-major); caller frees via da_capi_free_floats. NULL on error. */
 float* da_capi_depth_path(da_ctx* ctx, const char* image_path, int* out_h, int* out_w);
 void   da_capi_free_floats(float* p);
+/* Run pose; fills ext[12] (3x4 row-major) and intr[9] (3x3). Returns 0 ok, -1 error. */
+int da_capi_pose_path(da_ctx* ctx, const char* image_path, float out_ext[12], float out_intr[9]);
 #ifdef __cplusplus
 }
 #endif
