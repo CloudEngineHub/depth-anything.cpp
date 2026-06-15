@@ -21,6 +21,8 @@ struct Config {
     std::vector<int32_t> out_layers;
     std::vector<int32_t> head_out_channels; // DPT head per-stage out_channels
     std::vector<float>   img_mean, img_std;
+    uint32_t    img_resize_target = 504;          // longest/shortest-side processing resolution
+    std::string img_resize_mode = "upper_bound";  // "upper_bound" | "lower_bound"
     std::string checkpoint_name;
 };
 

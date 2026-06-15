@@ -8,7 +8,7 @@ function(da_add_test name)
   set_tests_properties(${name} PROPERTIES
       SKIP_RETURN_CODE 77
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-      ENVIRONMENT "DA_TEST_GGUF=${CMAKE_SOURCE_DIR}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${CMAKE_SOURCE_DIR}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${CMAKE_SOURCE_DIR}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${CMAKE_SOURCE_DIR}/dumps/reference_mv4.gguf;DA_TEST_GGUF_GIANT=${CMAKE_SOURCE_DIR}/models/depth-anything-giant-f32.gguf;DA_TEST_BASELINE_GIANT=${CMAKE_SOURCE_DIR}/dumps/reference_giant.gguf;DA_TEST_GGUF_METRIC=${CMAKE_SOURCE_DIR}/models/depth-anything-nested-metric.gguf;DA_TEST_GGUF_ANYVIEW=${CMAKE_SOURCE_DIR}/models/depth-anything-nested-anyview.gguf;DA_TEST_BASELINE_NESTED=${CMAKE_SOURCE_DIR}/dumps/reference_nested.gguf")
+      ENVIRONMENT "DA_TEST_GGUF=${CMAKE_SOURCE_DIR}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${CMAKE_SOURCE_DIR}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${CMAKE_SOURCE_DIR}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${CMAKE_SOURCE_DIR}/dumps/reference_mv4.gguf;DA_TEST_GGUF_GIANT=${CMAKE_SOURCE_DIR}/models/depth-anything-giant-f32.gguf;DA_TEST_BASELINE_GIANT=${CMAKE_SOURCE_DIR}/dumps/reference_giant.gguf;DA_TEST_GGUF_METRIC=${CMAKE_SOURCE_DIR}/models/depth-anything-nested-metric.gguf;DA_TEST_GGUF_ANYVIEW=${CMAKE_SOURCE_DIR}/models/depth-anything-nested-anyview.gguf;DA_TEST_BASELINE_NESTED=${CMAKE_SOURCE_DIR}/dumps/reference_nested.gguf;DA_TEST_BASELINE_PREPROC=${CMAKE_SOURCE_DIR}/dumps/reference_preproc_real.gguf;DA_TEST_PREPROC_PNG=${CMAKE_SOURCE_DIR}/dumps/preproc_real_input.png")
 endfunction()
 
 da_add_test(test_model_loader)
@@ -16,6 +16,7 @@ da_add_test(test_backend)
 da_add_test(test_ggml_extend)
 da_add_test(test_capi)
 da_add_test(test_preprocess)
+da_add_test(test_preprocess_real)
 da_add_test(test_rope2d)
 da_add_test(test_uv_posembed)
 da_add_test(test_backbone_prepare)
