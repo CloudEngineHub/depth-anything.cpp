@@ -5,6 +5,9 @@
 namespace da {
 struct BlockWeights {
     ggml_tensor *n1_w,*n1_b,*n2_w,*n2_b,*ls1,*ls2,*fc1_w,*fc1_b,*fc2_w,*fc2_b;
+    // SwiGLU FFN (ffn_type=="swiglu"): w12 = Linear(dim->2*hidden), w3 = Linear(hidden->dim).
+    ggml_tensor *w12_w=nullptr,*w12_b=nullptr,*w3_w=nullptr,*w3_b=nullptr;
+    bool swiglu=false;
     AttnWeights attn;
 };
 BlockWeights load_block(const ModelLoader& ml, int i);

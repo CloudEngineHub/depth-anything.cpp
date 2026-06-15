@@ -36,11 +36,11 @@ bool type_from_string(const std::string& s_in, ggml_type& out) {
 }
 
 // Only DA3 2D matmul weights consumed by ggml_mul_mat. NOTHING else.
-//   vit.blk.{i}.{attn_qkv,attn_proj,mlp_fc1,mlp_fc2}.weight
+//   vit.blk.{i}.{attn_qkv,attn_proj,mlp_fc1,mlp_fc2,mlp_w12,mlp_w3}.weight
 //   cam.{bb0,bb2,fc_t,fc_q,fc_fov}.weight
 bool should_quantize(const std::string& name) {
     static const std::regex re_vit(
-        "^vit\\.blk\\.[0-9]+\\.(attn_qkv|attn_proj|mlp_fc1|mlp_fc2)\\.weight$");
+        "^vit\\.blk\\.[0-9]+\\.(attn_qkv|attn_proj|mlp_fc1|mlp_fc2|mlp_w12|mlp_w3)\\.weight$");
     static const std::regex re_cam(
         "^cam\\.(bb0|bb2|fc_t|fc_q|fc_fov)\\.weight$");
     return std::regex_match(name, re_vit) || std::regex_match(name, re_cam);

@@ -8,7 +8,7 @@ function(da_add_test name)
   set_tests_properties(${name} PROPERTIES
       SKIP_RETURN_CODE 77
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-      ENVIRONMENT "DA_TEST_GGUF=${CMAKE_SOURCE_DIR}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${CMAKE_SOURCE_DIR}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${CMAKE_SOURCE_DIR}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${CMAKE_SOURCE_DIR}/dumps/reference_mv4.gguf")
+      ENVIRONMENT "DA_TEST_GGUF=${CMAKE_SOURCE_DIR}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${CMAKE_SOURCE_DIR}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${CMAKE_SOURCE_DIR}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${CMAKE_SOURCE_DIR}/dumps/reference_mv4.gguf;DA_TEST_GGUF_GIANT=${CMAKE_SOURCE_DIR}/models/depth-anything-giant-f32.gguf;DA_TEST_BASELINE_GIANT=${CMAKE_SOURCE_DIR}/dumps/reference_giant.gguf")
 endfunction()
 
 da_add_test(test_model_loader)
@@ -22,6 +22,8 @@ da_add_test(test_backbone_prepare)
 da_add_test(test_backbone)
 da_add_test(test_backbone_mv)
 da_add_test(test_backbone_mv4)
+da_add_test(test_backbone_giant)
+da_add_test(test_giant_depth_pose)
 da_add_test(test_dpt_blocks)
 da_add_test(test_dpt_head)
 da_add_test(test_engine_depth)

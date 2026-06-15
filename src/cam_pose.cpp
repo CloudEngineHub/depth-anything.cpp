@@ -9,14 +9,17 @@ bool CamPose::pose(const std::vector<float>& cam_token, int H, int W,
                    std::array<float,9>& pose_enc,
                    std::array<float,12>& extrinsics,
                    std::array<float,9>& intrinsics) {
-    if (cam_token.size() != 1536) return false;
     auto t = [&](const std::string& n) { return ml_.tensor(n); };
+    // cam token width = 2*embed (base 1536, giant 3072); validate against bb0 input dim.
+    ggml_tensor* bb0 = t("cam.bb0.weight");
+    if (cam_token.empty() || !bb0 || (int64_t)cam_token.size() != bb0->ne[0]) return false;
+    const int64_t D = (int64_t)cam_token.size();
 
     // ---- MLP / heads via single ggml graph -> 9-vector pose_enc ----
     GraphInputPool pool;
     std::vector<float> pe;  // [t(3), q(4), fov(2)]
     bool ok = be_.compute([&](ggml_context* ctx) -> ggml_tensor* {
-        const int64_t ne[1] = { 1536 };
+        const int64_t ne[1] = { D };
         ggml_tensor* feat = be_.add_graph_input_nd(ctx, pool, cam_token.data(), ne, 1);
         // backbone: relu(linear(bb0)); relu(linear(bb2))
         feat = ggml_relu(ctx, linear(ctx, t("cam.bb0.weight"), feat, t("cam.bb0.bias")));

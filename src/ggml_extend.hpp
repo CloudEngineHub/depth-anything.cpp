@@ -23,4 +23,8 @@ inline ggml_tensor* layerscale(ggml_context* ctx, ggml_tensor* x, ggml_tensor* g
 inline ggml_tensor* gelu_erf(ggml_context* ctx, ggml_tensor* x){
     return ggml_gelu_erf(ctx, x);
 }
+// SiLU / swish - matches torch F.silu (SwiGLU FFN gate activation).
+inline ggml_tensor* silu(ggml_context* ctx, ggml_tensor* x){
+    return ggml_silu(ctx, x);
+}
 } // namespace da

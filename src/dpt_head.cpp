@@ -31,8 +31,12 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
     const int patch = (int)cfg.patch_size;           // 14
     const int pw = W / patch, ph = H / patch;        // 16,16
     const int N = ph * pw;                            // 256
-    const int C = 1536;                               // dim_in (feat channel)
-    const int oc[4] = { 96, 192, 384, 768 };          // out_channels
+    const int C = 2 * (int)cfg.embed_dim;             // dim_in = cat([local,norm]) (base 1536, giant 3072)
+    int oc[4] = { 96, 192, 384, 768 };                // out_channels (base default)
+    if (cfg.head_out_channels.size() == 4)
+        for (int s = 0; s < 4; ++s) oc[s] = cfg.head_out_channels[s];
+    // output_conv1 emits features/2 channels (base 64, giant 128); pe2 added there.
+    const int feat_half = cfg.head_features ? (int)cfg.head_features / 2 : 64;
     const float aspect = (float)W / (float)H;        // 1.0
     const float ratio = 0.1f;
     const float eps = 1e-5f;                          // head.norm is nn.LayerNorm default
@@ -120,8 +124,8 @@ bool DptHead::run(const std::vector<std::vector<float>>& feats, int H, int W,
         if (fused) be_.capture(out, &fused_cap);
 
         // upsample to (H,W), + 0.1*UV(64)
-        out = interp_bilinear_ac(ctx, out, W, H);             // [224,224,64]
-        ggml_tensor* pe2 = add_uv_input(ctx, be_, pool, W, H, 64, aspect, ratio);
+        out = interp_bilinear_ac(ctx, out, W, H);             // [224,224,feat_half]
+        ggml_tensor* pe2 = add_uv_input(ctx, be_, pool, W, H, feat_half, aspect, ratio);
         out = ggml_add(ctx, out, pe2);
         // output_conv2: conv 64->32 (3x3 pad1) -> relu -> conv 32->2 (1x1)
         out = conv2d(ctx, t("head.scratch.out2a.weight"), t("head.scratch.out2a.bias"), out, 1, 1);

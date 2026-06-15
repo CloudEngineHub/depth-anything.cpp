@@ -70,7 +70,10 @@ bool ModelLoader::load(const std::string& path){
     cfg_.cat_token       = kv_bool(gguf_, DA_KV_VIT_CAT_TOKEN, true);
     cfg_.qkv_bias        = kv_bool(gguf_, DA_KV_VIT_QKV_BIAS, true);
     cfg_.interp_antialias= kv_bool(gguf_, DA_KV_VIT_INTERP_ANTIALIAS, false);
+    cfg_.ffn_type        = kv_str(gguf_, DA_KV_VIT_FFN_TYPE, "mlp");
+    cfg_.head_features   = kv_u32(gguf_, DA_KV_HEAD_FEATURES, 0);
     cfg_.out_layers      = kv_i32_arr(gguf_, DA_KV_VIT_OUT_LAYERS);
+    cfg_.head_out_channels = kv_i32_arr(gguf_, DA_KV_HEAD_OUT_CHANNELS);
     cfg_.img_mean        = kv_f32_arr(gguf_, DA_KV_IMG_MEAN);
     cfg_.img_std         = kv_f32_arr(gguf_, DA_KV_IMG_STD);
     cfg_.checkpoint_name = kv_str(gguf_, DA_KV_CHECKPOINT_NAME);
