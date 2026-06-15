@@ -30,6 +30,7 @@ set(DA_SOURCES
     src/image_io.cpp
     src/preprocess.cpp
     src/rope2d.cpp
+    src/uv_posembed.cpp
     src/attention.cpp
     src/vit_block.cpp
     src/dino_backbone.cpp
