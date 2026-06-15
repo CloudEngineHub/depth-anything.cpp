@@ -57,6 +57,36 @@ KV = {
     "gs.pred_offset_depth": f"{ARCH}.gs.pred_offset_depth",
     "gs.pred_offset_xy":    f"{ARCH}.gs.pred_offset_xy",
     "gs.pred_color":        f"{ARCH}.gs.pred_color",
+    # ===== nested metric branch (DA3NESTED) =====
+    # metric ViT-L backbone (24 layers, embed 1024, classic MLP fc1/fc2)
+    "m_vit.embed_dim":        f"{ARCH}.m_vit.embed_dim",
+    "m_vit.depth":            f"{ARCH}.m_vit.depth",
+    "m_vit.num_heads":        f"{ARCH}.m_vit.num_heads",
+    "m_vit.head_dim":         f"{ARCH}.m_vit.head_dim",
+    "m_vit.mlp_hidden":       f"{ARCH}.m_vit.mlp_hidden",
+    "m_vit.ffn_type":         f"{ARCH}.m_vit.ffn_type",
+    "m_vit.num_register":     f"{ARCH}.m_vit.num_register_tokens",
+    "m_vit.init_values":      f"{ARCH}.m_vit.init_values",
+    "m_vit.alt_start":        f"{ARCH}.m_vit.alt_start",
+    "m_vit.rope_start":       f"{ARCH}.m_vit.rope_start",
+    "m_vit.qknorm_start":     f"{ARCH}.m_vit.qknorm_start",
+    "m_vit.rope_freq":        f"{ARCH}.m_vit.rope_freq",
+    "m_vit.cat_token":        f"{ARCH}.m_vit.cat_token",
+    "m_vit.qkv_bias":         f"{ARCH}.m_vit.qkv_bias",
+    "m_vit.ln_eps":           f"{ARCH}.m_vit.ln_eps",
+    "m_vit.interp_offset":    f"{ARCH}.m_vit.interpolate_offset",
+    "m_vit.interp_antialias": f"{ARCH}.m_vit.interpolate_antialias",
+    "m_vit.pos_embed_grid":   f"{ARCH}.m_vit.pos_embed_grid",
+    "m_vit.out_layers":       f"{ARCH}.m_vit.out_layers",
+    # metric DPT head (single-head) + sky head
+    "m_head.features":        f"{ARCH}.m_head.features",
+    "m_head.out_channels":    f"{ARCH}.m_head.out_channels",
+    "m_head.output_dim":      f"{ARCH}.m_head.output_dim",
+    "m_head.down_ratio":      f"{ARCH}.m_head.down_ratio",
+    "m_head.activation":      f"{ARCH}.m_head.activation",
+    "m_head.conf_activation": f"{ARCH}.m_head.conf_activation",
+    "m_head.sky_activation":  f"{ARCH}.m_head.sky_activation",
+    "m_head.norm_type":       f"{ARCH}.m_head.norm_type",
 }
 
 def rename_backbone(name: str):
@@ -202,4 +232,34 @@ def rename_gs(name: str):
         sub = {"0": "out2a", "2": "out2b"}.get(m.group(1))
         if sub is not None:
             return f"gs.scratch.{sub}.{m.group(2)}"
+    return None
+
+
+# ===== nested metric branch (DA3NESTED-GIANT-LARGE) ==========================
+def rename_metric_backbone(name: str):
+    """HF metric backbone param name (pretrained.* prefix already stripped) ->
+    GGUF tensor name under the 'm_vit.*' prefix, or None if not a backbone tensor.
+    The metric ViT-L uses the classic MLP FFN (fc1/fc2), so this is the same
+    mapping as rename_backbone, just re-prefixed m_vit.* instead of vit.*."""
+    g = rename_backbone(name)
+    if g is not None and g.startswith("vit."):
+        return "m_vit." + g[len("vit."):]
+    return None
+
+
+def rename_metric_head(name: str):
+    """HF metric DPT-head param name (already without 'head.' prefix) -> GGUF
+    tensor name under the 'm_head.*' prefix, or None if unknown. Mirrors
+    rename_head (single-head DPT main path: norm/projects/resize/scratch.layer_rn/
+    refinenet/output_conv1/output_conv2.{0,2}) PLUS the parallel sky head
+    scratch.sky_output_conv2.{0,2} -> m_head.scratch.sky_out2{a,b}."""
+    n = name
+    m = re.match(r"^scratch\.sky_output_conv2\.(\d+)\.(weight|bias)$", n)
+    if m:
+        sub = {"0": "sky_out2a", "2": "sky_out2b"}.get(m.group(1))
+        if sub is not None:
+            return f"m_head.scratch.{sub}.{m.group(2)}"
+    g = rename_head(n)
+    if g is not None and g.startswith("head."):
+        return "m_head." + g[len("head."):]
     return None
