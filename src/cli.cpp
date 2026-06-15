@@ -7,6 +7,7 @@ void print_help(){
         "  da3-cli info  --model <gguf>\n"
         "  da3-cli depth --model <gguf> --input <img> [--pfm <out.pfm>] [--png <out.png>] [--pose <out.json>] [--no-invert]\n"
         "  da3-cli depth --model <gguf> --input a.png --input b.png [--out-prefix out] [--no-invert]   (multi-view)\n"
+        "  da3-cli reconstruct --model <giant.gguf> --input <img> --ply <out.ply> [--pose <out.json>]\n"
         "  da3-cli quantize <in.gguf> <out.gguf> <type>   (type: f16|q8_0|q6_k|q5_k|q4_k)\n");
 }
 Parsed parse(int argc, char** argv){
@@ -38,6 +39,21 @@ Parsed parse(int argc, char** argv){
         }
         if (r.model.empty()) r.error = "depth: --model required";
         else if (r.inputs.empty()) r.error = "depth: --input required";
+        return r;
+    }
+    if (first == "reconstruct"){
+        r.sub = Sub::Reconstruct;
+        for (int i=2;i<argc;++i){
+            std::string a = argv[i];
+            if (a == "--model" && i+1<argc){ r.model = argv[++i]; }
+            else if (a == "--input" && i+1<argc){ r.input = argv[++i]; }
+            else if (a == "--ply" && i+1<argc){ r.output_ply = argv[++i]; }
+            else if (a == "--pose" && i+1<argc){ r.output_pose = argv[++i]; }
+            else { r.error = "unknown flag: " + a; return r; }
+        }
+        if (r.model.empty()) r.error = "reconstruct: --model required";
+        else if (r.input.empty()) r.error = "reconstruct: --input required";
+        else if (r.output_ply.empty()) r.error = "reconstruct: --ply required";
         return r;
     }
     if (first == "quantize"){

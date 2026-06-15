@@ -19,7 +19,16 @@ def main():
     depth = bb.n_blocks
     num_heads = bb.num_heads
     head_dim = embed_dim // num_heads
-    mlp_hidden = bb.blocks[0].mlp.fc1.out_features
+    # FFN type: classic MLP (fc1/fc2) vs SwiGLU (w12/w3, giant). For SwiGLU the
+    # "hidden" width the C++ loader cares about is w3.in_features (the post-gate
+    # dim, 4096 for the giant); for plain MLP it is fc1.out_features.
+    mlp0 = bb.blocks[0].mlp
+    if hasattr(mlp0, "w12"):
+        ffn_type = "swiglu"
+        mlp_hidden = mlp0.w3.in_features
+    else:
+        ffn_type = "mlp"
+        mlp_hidden = mlp0.fc1.out_features
     pos_rows = bb.pos_embed.shape[1] - 1
     M = int(round(pos_rows ** 0.5))
     assert M * M == pos_rows, f"pos_embed rows {pos_rows} not a perfect square"
@@ -32,7 +41,7 @@ def main():
 
     w = gguf.GGUFWriter(a.output, K.ARCH)
     w.add_string(K.KV["arch"], K.ARCH)
-    w.add_string(K.KV["checkpoint_name"], "DA3-BASE")
+    w.add_string(K.KV["checkpoint_name"], os.path.basename(a.model.rstrip("/")))
     w.add_uint32(K.KV["patch_size"], 14)
     w.add_uint32(K.KV["vit.embed_dim"], int(embed_dim))
     w.add_uint32(K.KV["vit.depth"], int(depth))
@@ -51,7 +60,9 @@ def main():
     w.add_float32(K.KV["vit.interp_offset"], float(bb.interpolate_offset))
     w.add_bool(K.KV["vit.interp_antialias"], bool(bb.interpolate_antialias))
     w.add_uint32(K.KV["vit.pos_embed_grid"], int(M))
-    w.add_array(K.KV["vit.out_layers"], [5, 7, 9, 11])
+    w.add_string(K.KV["vit.ffn_type"], ffn_type)
+    out_layers = list(getattr(net.backbone, "out_layers", [5, 7, 9, 11]))
+    w.add_array(K.KV["vit.out_layers"], [int(v) for v in out_layers])
     w.add_array(K.KV["img.mean"], [0.485, 0.456, 0.406])
     w.add_array(K.KV["img.std"], [0.229, 0.224, 0.225])
     w.add_string(K.KV["img.resize_mode"], "upper_bound")
@@ -142,6 +153,44 @@ def main():
     if cam_written == 0:
         raise SystemExit("error: no cam_dec tensors mapped; check rename_cam")
 
+    # --- GSDPT 3D-Gaussian head (gs_head) ------------------------------------
+    # Present only on the giant (DA3-BASE has net.gs_head is None -> skip). The
+    # gs_adapter carries no learned weights, so only KV is needed for it.
+    gs_written = 0
+    if getattr(net, "gs_head", None) is not None:
+        gs = net.gs_head
+        gs_features = int(gs.scratch.layer1_rn.out_channels)
+        gs_out_channels = [int(gs.projects[i].out_channels) for i in range(4)]
+        w.add_uint32(K.KV["gs.output_dim"], int(gs.out_dim))
+        w.add_uint32(K.KV["gs.features"], gs_features)
+        w.add_array(K.KV["gs.out_channels"], gs_out_channels)
+        ga = net.gs_adapter
+        w.add_uint32(K.KV["gs.sh_degree"], int(ga.sh_degree))
+        w.add_float32(K.KV["gs.scale_min"], float(ga.gaussian_scale_min))
+        w.add_float32(K.KV["gs.scale_max"], float(ga.gaussian_scale_max))
+        w.add_bool(K.KV["gs.pred_offset_depth"], bool(ga.pred_offset_depth))
+        w.add_bool(K.KV["gs.pred_offset_xy"], bool(ga.pred_offset_xy))
+        w.add_bool(K.KV["gs.pred_color"], bool(ga.pred_color))
+
+        gs_unmapped = []
+        for name, t in gs.named_parameters():
+            g = K.rename_gs(name)
+            if g is None:
+                gs_unmapped.append(name)
+                continue
+            arr = np.ascontiguousarray(
+                t.detach().cpu().to(torch.float32).numpy(), dtype=np.float32
+            )
+            w.add_tensor(g, arr)
+            gs_written += 1
+        if gs_unmapped:
+            raise SystemExit(
+                f"error: {len(gs_unmapped)} gs_head param(s) unmapped "
+                f"(rename_gs gap): {gs_unmapped[:8]}"
+            )
+        if gs_written == 0:
+            raise SystemExit("error: no gs_head tensors mapped; check rename_gs")
+
     w.write_header_to_file()
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
@@ -149,6 +198,7 @@ def main():
     print(f"wrote {a.output}: backbone_tensors={written} skipped={len(skipped)}")
     print(f"head_tensors={head_written} skipped_aux={len(skipped_aux)}")
     print(f"cam_tensors={cam_written}")
+    print(f"ffn_type={ffn_type} mlp_hidden={mlp_hidden} gs_tensors={gs_written}")
 
 
 if __name__ == "__main__":

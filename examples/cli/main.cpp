@@ -2,6 +2,7 @@
 #include "engine.hpp"
 #include "depth_export.hpp"
 #include "pose_export.hpp"
+#include "ply_export.hpp"
 #include "quantize.hpp"
 #include <cstdio>
 #include <algorithm>
@@ -61,6 +62,16 @@ static int cmd_depth(const da::cli::Parsed& p){
     if(!p.output_png.empty()) da::write_depth_png(p.output_png, depth, H, W, p.invert);
     return 0;
 }
+static int cmd_reconstruct(const da::cli::Parsed& p){
+    auto eng = da::Engine::load(p.model, 0);
+    if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
+    da::Gaussians g; int H, W;
+    if (!eng->reconstruct_path(p.input, g, H, W)){ std::fprintf(stderr, "error: reconstruct failed\n"); return 1; }
+    std::printf("reconstructed %d gaussians (%dx%d)\n", g.N, W, H);
+    if (!da::write_gaussian_ply(p.output_ply, g)){ std::fprintf(stderr, "error: write ply failed\n"); return 1; }
+    std::printf("wrote %s\n", p.output_ply.c_str());
+    return 0;
+}
 static int cmd_quantize(const da::cli::Parsed& p){
     if(!da::quantize_gguf(p.q_in, p.q_out, p.q_type)){ std::fprintf(stderr,"error: quantize failed\n"); return 1; }
     std::printf("wrote %s (%s)\n", p.q_out.c_str(), p.q_type.c_str());
@@ -73,6 +84,7 @@ int main(int argc, char** argv){
     switch (p.sub){
         case S::Info: return cmd_info(p.model);
         case S::Depth: return cmd_depth(p);
+        case S::Reconstruct: return cmd_reconstruct(p);
         case S::Quantize: return cmd_quantize(p);
         case S::Help: da::cli::print_help(); return 0;
         default: da::cli::print_help(); return 1;

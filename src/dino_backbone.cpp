@@ -250,8 +250,12 @@ int DinoBackbone::select_reference_view_saddle(const std::vector<std::vector<flo
     std::vector<double> sim_score(S,0.0), feat_norm(S,0.0), feat_var(S,0.0);
     for (int v=0;v<S;++v){
         double s=0;
-        for (int w=0;w<S;++w){ if (w==v) continue; double dot=0;
-            for (int e=0;e<embed;++e) dot+=cn[v][e]*cn[w][e]; s+=dot; }
+        for (int w=0;w<S;++w){
+            if (w==v) continue;
+            double dot=0;
+            for (int e=0;e<embed;++e) dot+=cn[v][e]*cn[w][e];
+            s+=dot;
+        }
         sim_score[v]=s/(double)(S-1);
         feat_norm[v]=norm[v];
         // variance of NORMALIZED cls over channels (torch .var default: unbiased, /(C-1))

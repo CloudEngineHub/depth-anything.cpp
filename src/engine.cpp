@@ -5,6 +5,8 @@
 #include "preprocess.hpp"
 #include "dpt_head.hpp"
 #include "cam_pose.hpp"
+#include "gs_head.hpp"
+#include "gs_adapter.hpp"
 
 namespace da {
 std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
@@ -84,6 +86,32 @@ bool Engine::depth_pose_multi(const std::vector<Image>& imgs, std::vector<ViewRe
         if (!cam.pose(cam_tokens[3][v], H, W, pe, r.ext, r.intr)) { DA_LOG("depth_pose_multi: cam pose failed"); return false; }
     }
     return true;
+}
+bool Engine::reconstruct(const Image& img, Gaussians& g, int& H, int& W){
+    Preprocessed p;
+    if (!preprocess(img, ml_.config(), p)) { DA_LOG("reconstruct: preprocess failed"); return false; }
+    H = p.H; W = p.W;
+    // One backbone pass: feats[4] feed depth + gs_head; cam_tokens[3] feeds pose.
+    DinoBackbone bb(ml_, be_);
+    std::vector<std::vector<float>> feats, cam_tokens;
+    if (!bb.forward(p.chw, H, W, feats, cam_tokens)) { DA_LOG("reconstruct: backbone failed"); return false; }
+    if (feats.size() < 4 || cam_tokens.size() < 4) { DA_LOG("reconstruct: missing out layers"); return false; }
+    DptHead head(ml_, be_);
+    std::vector<float> depth, conf;
+    if (!head.depth(feats, H, W, depth, conf)) { DA_LOG("reconstruct: depth head failed"); return false; }
+    CamPose cam(ml_, be_);
+    std::array<float,9> pe; std::array<float,12> ext; std::array<float,9> intr;
+    if (!cam.pose(cam_tokens[3], H, W, pe, ext, intr)) { DA_LOG("reconstruct: cam pose failed"); return false; }
+    GsHead gs(ml_, be_);
+    std::vector<float> raw_gs, gs_conf;
+    if (!gs.raw_gaussians(feats, p.chw, H, W, raw_gs, gs_conf)) { DA_LOG("reconstruct: gs_head failed"); return false; }
+    GsAdapter ad;
+    if (!ad.build(raw_gs, depth, gs_conf, ext, intr, H, W, g)) { DA_LOG("reconstruct: gs_adapter failed"); return false; }
+    return true;
+}
+bool Engine::reconstruct_path(const std::string& image_path, Gaussians& g, int& H, int& W){
+    Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("reconstruct: load image failed"); return false; }
+    return reconstruct(img, g, H, W);
 }
 bool Engine::depth_pose_path(const std::string& image_path, std::vector<float>& depth, std::vector<float>& conf,
                              std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W){
