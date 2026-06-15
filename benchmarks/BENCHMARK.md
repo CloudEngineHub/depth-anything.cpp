@@ -201,3 +201,52 @@ Parity is **exact**: `test_winograd` (random 128×96, IC=OC=64) gives max|d|=**1
 active. So Winograd is now the **auto default** for 3×3 stride-1 convs; `DA_CONV=direct` (or
 `im2col`) still selects the old paths for A/B. The win confirms the lever was conv FLOPs, and that
 a carefully-vectorized Winograd GEMV can beat ggml's already-tuned llamafile direct conv here.
+
+## CPU optimization #5: blocked F(2×2) GEMM + F(4×4) eval — **f2b shipped, f4 rejected as default**
+
+The CPU-opt #4 Winograd used a **per-tile GEMV** (one 16-wide AVX-512 reduction over OC, per
+tile, per winograd position) — it reloads the filter `U` for every tile. Two ideas to go faster:
+
+- **B. Blocked F(2×2) GEMM (`DA_WINO=f2b`).** *Same* F(2×2) algorithm, better kernel: batch
+  `TB=8` tiles and turn the winograd-domain multiply into a small GEMM
+  `M[ξν][t][oc] = Σ_IC U[ξν][ic][oc]·V[ξν][ic][t]`. Each loaded `U`-row (16 OC lanes) is now reused
+  across all 8 tiles in registers (8 zmm accumulators), so arithmetic intensity goes up and `U`
+  traffic drops ~8×. Threading splits over tile-**blocks** so every thread's GEMM stays full-width.
+  This is **parity-identical** to F(2×2) (same FLOPs, same f32 reassociation).
+- **A. F(4×4,3×3) Winograd (`DA_WINO=f4`).** 6×6 input tile → 4×4 output, 36 winograd positions;
+  **4× fewer mults vs direct** (vs 2.25× for F(2×2)). Transform matrices (Lavin & Gray) were
+  **verified numerically in python first** (float64 max|d|=6.6e-14 vs a direct 3×3 conv; float32
+  single-tile ≈4.2e-5). Reuses the same blocked GEMM kernel as f2b. **Risk:** the `1/6`, `1/24`
+  fractions make it less accurate than F(2×2).
+
+**Parity (test_winograd random 128×96, IC=OC=64, vs `ggml_conv_2d_direct`; e2e = native depth corr):**
+
+| mode | test_winograd max\|d\| | e2e max\|d\| | e2e corr | full suite |
+|---|--:|--:|--:|:--|
+| `direct` (reference) | 0 (is the reference) | — | — | green |
+| `f2` (per-tile GEMV) | 1.38e-5 | 1.49e-6 | 1.000000 | green |
+| `f2b` (blocked, **new default**) | **1.38e-5** (bit-identical to f2) | 1.49e-6 | **1.000000** | **30/30 green** |
+| `f4` (F(4×4)) | 2.20e-4 | 1.31e-6 | 1.000000 | 30/30 green |
+
+Note f4 *does* pass the hard gate (suite green, e2e corr=1.0) — its higher per-conv error
+(2.2e-4 ≪ the 2e-3 test gate) washes out after the head's normalization, so the final depth is
+still corr=1.0. It is **not** rejected for breaking parity.
+
+**Warm head latency (DA3 @504×336, 16 threads, `--repeat 25–30`, median of warm iters):**
+
+| mode | BASE head ms | GIANT head ms |
+|---|--:|--:|
+| `direct` (pre-#4) | ~242 | — |
+| `f2` (#4 default) | ~205 | ~625 |
+| `f2b` (**new default**) | **~194** | **~490** (−22% vs f2) |
+| `f4` | ~195 | ~494 |
+
+**Decision — `f2b` is the new auto default.** On BASE, f2b and f4 are statistically tied (~194 ms,
+both ~5% faster than f2). On the much larger **GIANT** head the blocked GEMM wins big (490 vs 625
+ms, **−22%**), and there f2b is even marginally faster than f4 — the F(4×4) FLOP cut is eaten by its
+larger (6×6) input/output transforms and 36-position bookkeeping, while the blocked-GEMM
+amortization (the real bottleneck) is identical for both. So **f4 is faster than the old f2 but NOT
+faster than f2b**, and it carries real accuracy risk (2.2e-4 per-conv, fractional transform). The
+honest call: ship the variant that is **fastest AND parity-exact** → `f2b`. `f4` is kept selectable
+(`DA_WINO=f4`) and documented, but is not the default because it gives no speed win over f2b while
+adding numerical risk. `DA_WINO=f2` restores the old per-tile GEMV for A/B.
