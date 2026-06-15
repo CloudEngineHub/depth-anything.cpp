@@ -1,6 +1,7 @@
 #pragma once
 #include "model_loader.hpp"
 #include "backend.hpp"
+#include "image_io.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,6 +16,12 @@ public:
     // M1: debug entry returning backbone features for out_layers (filled in T16).
     bool backbone_features(const std::vector<float>& input_image, int H, int W,
                            std::vector<std::vector<float>>& feats_out);
+    // Full pipeline: image file -> preprocess -> backbone -> DualDPT depth head.
+    // depth_out/conf_out are [H*W] row-major; H,W set to the processed dims.
+    bool depth(const std::string& image_path, std::vector<float>& depth_out,
+               std::vector<float>& conf_out, int& H, int& W);
+    bool depth_image(const Image& img, std::vector<float>& depth_out,
+                     std::vector<float>& conf_out, int& H, int& W);
 private:
     ModelLoader ml_;
     Backend be_;
