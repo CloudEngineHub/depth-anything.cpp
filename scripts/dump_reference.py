@@ -152,6 +152,33 @@ def main():
     for k, v in cap.items():
         print(f"  {k}: {list(v.shape)}")
 
+    # ---- M4: multi-view (S=2) reference ----
+    from scripts.da3_reference import fixed_input_multiview
+    x_mv, raws = fixed_input_multiview(S=2, seed=0)
+    mvcap = {}
+    with torch.no_grad():
+        outs_mv, _ = bb.get_intermediate_layers(
+            x_mv, n=[5, 7, 9, 11], export_feat_layers=[],
+            ref_view_strategy="saddle_balanced")
+        full_mv = net(x_mv)
+    MV_OUT_LAYERS = [5, 7, 9, 11]
+    for L, o in zip(MV_OUT_LAYERS, outs_mv):
+        mvcap[f"feat_mv_{L}"] = o[0].detach().reshape(-1).float().contiguous()   # [1,2,256,1536]->flat
+        mvcap[f"cam_mv_{L}"] = o[1].detach().reshape(-1).float().contiguous()    # [1,2,1536]->flat
+    mvcap["depth_mv"] = full_mv["depth"].detach().reshape(-1).float().contiguous()        # [1,2,224,224]
+    mvcap["extrinsics_mv"] = full_mv["extrinsics"].detach().reshape(-1).float().contiguous()  # [1,2,3,4]
+    mvcap["intrinsics_mv"] = full_mv["intrinsics"].detach().reshape(-1).float().contiguous()  # [1,2,3,3]
+    mvcap["raw_mv_0"] = torch.from_numpy(raws[0].astype(np.float32))
+    mvcap["raw_mv_1"] = torch.from_numpy(raws[1].astype(np.float32))
+    wmv = gguf.GGUFWriter("dumps/reference_mv.gguf", "reference_mv")
+    for k, v in mvcap.items():
+        wmv.add_tensor(k, np.ascontiguousarray(v.cpu().numpy().reshape(-1).astype(np.float32)))
+    wmv.write_header_to_file(); wmv.write_kv_data_to_file(); wmv.write_tensors_to_file(); wmv.close()
+    with open("dumps/manifest_mv.json", "w") as f:
+        json.dump({"S": 2, "H": FIX_H, "W": FIX_W, "out_layers": MV_OUT_LAYERS,
+                   "shapes": {k: list(v.shape) for k, v in mvcap.items()}}, f, indent=2)
+    print("wrote dumps/reference_mv.gguf:", {k: list(v.shape) for k, v in mvcap.items()})
+
 
 if __name__ == "__main__":
     main()
