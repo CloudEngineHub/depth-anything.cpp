@@ -35,6 +35,7 @@ set(DA_SOURCES
     src/vit_block.cpp
     src/dino_backbone.cpp
     src/dpt_blocks.cpp
+    src/dpt_head.cpp
     src/engine.cpp
     src/da_capi.cpp
     src/cli.cpp
