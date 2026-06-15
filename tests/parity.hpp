@@ -48,6 +48,12 @@ inline bool compare(const std::vector<float>& got, const std::vector<float>& ref
                      label, got.size(), ref.size());
         return false;
     }
+    // An empty comparison is never a real parity pass; guard before the worst-index
+    // readback below (which would index [0] out of bounds on empty vectors).
+    if (got.empty()) {
+        std::fprintf(stderr, "[%s] empty vectors (got=ref=0) -> FAIL\n", label);
+        return false;
+    }
     double maxabs = 0.0;
     double sumabs = 0.0;
     size_t worst = 0;

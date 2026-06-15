@@ -24,7 +24,8 @@ bool preprocess(const Image& img, const Config& cfg, Preprocessed& out){
     if (img.w<=0 || img.h<=0 || cfg.img_mean.size()<3 || cfg.img_std.size()<3) return false;
     const int patch = (int)cfg.patch_size;
     int dw = (img.w/patch)*patch, dh = (img.h/patch)*patch;
-    if (dw==0) dw=patch; if (dh==0) dh=patch;
+    if (dw==0) dw=patch;
+    if (dh==0) dh=patch;
     std::vector<float> hwc; resize_bilinear(img, dw, dh, hwc);
     out.W = dw; out.H = dh; out.chw.assign((size_t)3*dh*dw, 0.f);
     for (int c=0;c<3;++c) for (int y=0;y<dh;++y) for (int x=0;x<dw;++x){
