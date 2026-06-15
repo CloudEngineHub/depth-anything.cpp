@@ -7,6 +7,7 @@
 #include "cam_pose.hpp"
 #include "gs_head.hpp"
 #include "gs_adapter.hpp"
+#include "nested.hpp"
 
 namespace da {
 std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
@@ -14,6 +15,17 @@ std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
     if (!e->ml_.load(path)) { DA_LOG("engine: load failed"); return nullptr; }
     e->be_.set_n_threads(n_threads > 0 ? n_threads : 1);
     if (!e->ml_.offload_weights(e->be_)) { DA_LOG("engine: offload failed"); return nullptr; }
+    return e;
+}
+std::unique_ptr<Engine> Engine::load_nested(const std::string& anyview_gguf,
+                                            const std::string& metric_gguf, int n_threads){
+    auto e = load(anyview_gguf, n_threads);
+    if (!e) { DA_LOG("engine: anyview load failed"); return nullptr; }
+    e->metric_ml_.reset(new ModelLoader());
+    e->metric_be_.reset(new Backend());
+    if (!e->metric_ml_->load(metric_gguf)) { DA_LOG("engine: metric load failed"); return nullptr; }
+    e->metric_be_->set_n_threads(n_threads > 0 ? n_threads : 1);
+    if (!e->metric_ml_->offload_weights(*e->metric_be_)) { DA_LOG("engine: metric offload failed"); return nullptr; }
     return e;
 }
 bool Engine::backbone_features(const std::vector<float>& input_chw, int H, int W,
@@ -117,5 +129,45 @@ bool Engine::depth_pose_path(const std::string& image_path, std::vector<float>& 
                              std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W){
     Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_pose: load image failed"); return false; }
     return depth_pose(img, depth, conf, ext, intr, H, W);
+}
+bool Engine::depth_metric(const Image& img, NestedOut& out, int& H, int& W){
+    if (!metric_ml_ || !metric_be_) { DA_LOG("depth_metric: engine not loaded via load_nested"); return false; }
+    // Both branches consume the SAME preprocessed input x (da3.py NestedDepthAnything3Net).
+    Preprocessed p;
+    if (!preprocess(img, ml_.config(), p)) { DA_LOG("depth_metric: preprocess failed"); return false; }
+    H = p.H; W = p.W;
+
+    // --- anyview (GIANT): backbone once -> depth + conf + cam pose ---
+    AnyviewOut any;
+    {
+        DinoBackbone bb(ml_, be_);
+        std::vector<std::vector<float>> feats, cam_tokens;
+        if (!bb.forward(p.chw, H, W, feats, cam_tokens)) { DA_LOG("depth_metric: anyview backbone failed"); return false; }
+        if (cam_tokens.size() < 4) { DA_LOG("depth_metric: missing cam token"); return false; }
+        DptHead head(ml_, be_);
+        if (!head.depth(feats, H, W, any.depth, any.depth_conf)) { DA_LOG("depth_metric: anyview depth head failed"); return false; }
+        CamPose cam(ml_, be_);
+        std::array<float,9> pe;
+        if (!cam.pose(cam_tokens[3], H, W, pe, any.extrinsics, any.intrinsics)) { DA_LOG("depth_metric: cam pose failed"); return false; }
+    }
+
+    // --- metric (ViT-L + DPT/sky): backbone + depth_sky head ---
+    MetricOut metric;
+    {
+        DinoBackbone bb(*metric_ml_, *metric_be_);
+        std::vector<std::vector<float>> feats_m, cams_m;
+        if (!bb.forward(p.chw, H, W, feats_m, cams_m)) { DA_LOG("depth_metric: metric backbone failed"); return false; }
+        DptHead head(*metric_ml_, *metric_be_);
+        if (!head.depth_sky(feats_m, H, W, metric.depth, metric.sky)) { DA_LOG("depth_metric: metric depth_sky failed"); return false; }
+    }
+    // The metric branch applies its own sky-fill inside da3_metric(x) before alignment.
+    NestedAligner::process_mono_sky(metric.depth, metric.sky);
+
+    out = NestedAligner::align(any, metric, H, W);
+    return true;
+}
+bool Engine::depth_metric_path(const std::string& image_path, NestedOut& out, int& H, int& W){
+    Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_metric: load image failed"); return false; }
+    return depth_metric(img, out, H, W);
 }
 } // namespace da

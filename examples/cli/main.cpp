@@ -43,7 +43,22 @@ static int cmd_depth_multi(const da::cli::Parsed& p, da::Engine& eng){
     }
     return 0;
 }
+static int cmd_depth_metric(const da::cli::Parsed& p){
+    auto eng = da::Engine::load_nested(p.model, p.metric_model, 0);
+    if (!eng){ std::fprintf(stderr, "error: load_nested failed\n"); return 1; }
+    da::NestedOut out; int H, W;
+    if (!eng->depth_metric_path(p.input, out, H, W)){ std::fprintf(stderr, "error: depth_metric failed\n"); return 1; }
+    float dmin=out.depth[0], dmax=out.depth[0]; for(float v:out.depth){ dmin=std::min(dmin,v); dmax=std::max(dmax,v);}
+    std::printf("metric depth %dx%d min=%.4f max=%.4f scale_factor=%.6f\n", W, H, dmin, dmax, out.scale_factor);
+    if(!p.output_pfm.empty()) da::write_pfm(p.output_pfm, out.depth, H, W);
+    if(!p.output_png.empty()) da::write_depth_png(p.output_png, out.depth, H, W, p.invert);
+    if(!p.output_pose.empty()){
+        da::write_pose_json(p.output_pose, out.extrinsics, out.intrinsics);
+    }
+    return 0;
+}
 static int cmd_depth(const da::cli::Parsed& p){
+    if (!p.metric_model.empty()) return cmd_depth_metric(p);
     auto eng = da::Engine::load(p.model, 0);
     if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
     if (p.inputs.size() > 1) return cmd_depth_multi(p, *eng);

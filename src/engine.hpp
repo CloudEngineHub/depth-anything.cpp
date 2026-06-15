@@ -3,6 +3,7 @@
 #include "backend.hpp"
 #include "image_io.hpp"
 #include "gs_adapter.hpp"
+#include "nested.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,6 +22,10 @@ struct ViewResult {
 class Engine {
 public:
     static std::unique_ptr<Engine> load(const std::string& gguf_path, int n_threads);
+    // Nested metric: loads BOTH the anyview (GIANT) GGUF and the metric (ViT-L
+    // + DPT/sky) GGUF. depth_metric() then runs both branches + alignment.
+    static std::unique_ptr<Engine> load_nested(const std::string& anyview_gguf,
+                                               const std::string& metric_gguf, int n_threads);
     const Config& config() const { return ml_.config(); }
     // M1: debug entry returning backbone features for out_layers (filled in T16).
     bool backbone_features(const std::vector<float>& input_image, int H, int W,
@@ -43,8 +48,16 @@ public:
     // pose + GSDPT raw_gs -> GaussianAdapter -> world-space Gaussians (N=H*W).
     bool reconstruct(const Image& img, Gaussians& g, int& H, int& W);
     bool reconstruct_path(const std::string& image_path, Gaussians& g, int& H, int& W);
+    // Nested metric depth: anyview GIANT (depth+conf+pose) + metric (depth+sky)
+    // branches -> NestedAligner -> final metric-scale depth + scaled extrinsics.
+    // Requires the engine to have been created via load_nested(). out.depth is
+    // [H*W] row-major.
+    bool depth_metric(const Image& img, NestedOut& out, int& H, int& W);
+    bool depth_metric_path(const std::string& image_path, NestedOut& out, int& H, int& W);
 private:
     ModelLoader ml_;
     Backend be_;
+    std::unique_ptr<ModelLoader> metric_ml_;
+    std::unique_ptr<Backend> metric_be_;
 };
 } // namespace da

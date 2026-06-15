@@ -6,6 +6,7 @@ enum class Sub { Info, Depth, Reconstruct, Quantize, Help, None };
 struct Parsed {
     Sub sub = Sub::None;
     std::string model;
+    std::string metric_model;          // depth: --metric-model => nested metric-scale depth
     std::string input, output_pfm, output_png;
     std::string output_pose;
     std::string output_ply;            // reconstruct: --ply out.ply
