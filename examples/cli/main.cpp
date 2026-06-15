@@ -14,9 +14,37 @@ static int cmd_info(const std::string& model){
                 c.checkpoint_name.c_str(), c.embed_dim, c.depth, c.num_heads);
     return 0;
 }
+static int cmd_depth_multi(const da::cli::Parsed& p, da::Engine& eng){
+    // Load all input images.
+    std::vector<da::Image> imgs(p.inputs.size());
+    for (size_t i = 0; i < p.inputs.size(); ++i){
+        if (!da::load_image_rgb(p.inputs[i], imgs[i])){
+            std::fprintf(stderr, "error: load image failed: %s\n", p.inputs[i].c_str()); return 1;
+        }
+    }
+    std::vector<da::ViewResult> views; int H, W;
+    if (!eng.depth_pose_multi(imgs, views, H, W)){ std::fprintf(stderr, "error: depth_pose_multi failed\n"); return 1; }
+    // Output prefix: --out-prefix, else --pfm, else --png, else "out".
+    std::string prefix = !p.out_prefix.empty() ? p.out_prefix
+                       : !p.output_pfm.empty() ? p.output_pfm
+                       : !p.output_png.empty() ? p.output_png : std::string("out");
+    for (size_t i = 0; i < views.size(); ++i){
+        const auto& r = views[i];
+        float dmin = r.depth[0], dmax = r.depth[0];
+        for (float v : r.depth){ dmin = std::min(dmin, v); dmax = std::max(dmax, v); }
+        std::printf("view %zu: depth %dx%d min=%.4f max=%.4f fx=%.4f fy=%.4f\n",
+                    i, W, H, dmin, dmax, r.intr[0], r.intr[4]);
+        std::string base = prefix + "_view" + std::to_string(i);
+        da::write_pfm(base + ".pfm", r.depth, H, W);
+        da::write_depth_png(base + ".png", r.depth, H, W, p.invert);
+        da::write_pose_json(base + ".json", r.ext, r.intr);
+    }
+    return 0;
+}
 static int cmd_depth(const da::cli::Parsed& p){
     auto eng = da::Engine::load(p.model, 0);
     if (!eng){ std::fprintf(stderr, "error: load failed\n"); return 1; }
+    if (p.inputs.size() > 1) return cmd_depth_multi(p, *eng);
     std::vector<float> depth, conf; int H,W;
     if (!p.output_pose.empty()){
         std::array<float,12> ext; std::array<float,9> intr;

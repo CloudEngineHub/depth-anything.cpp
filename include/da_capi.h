@@ -18,6 +18,12 @@ float* da_capi_depth_path(da_ctx* ctx, const char* image_path, int* out_h, int* 
 void   da_capi_free_floats(float* p);
 /* Run pose; fills ext[12] (3x4 row-major) and intr[9] (3x3). Returns 0 ok, -1 error. */
 int da_capi_pose_path(da_ctx* ctx, const char* image_path, float out_ext[12], float out_intr[9]);
+/* Multi-view depth+pose. n_images paths. Fills, per view i: out_ext[i*12], out_intr[i*9].
+   Returns a malloc'd float[n*H*W] depth (view-major), sets *out_h,*out_w,*out_n; NULL on error.
+   Caller frees the returned buffer via da_capi_free_floats. */
+float* da_capi_depth_pose_multi(da_ctx* ctx, const char** image_paths, int n_images,
+                                int* out_h, int* out_w, int* out_n,
+                                float* out_ext /* n*12 */, float* out_intr /* n*9 */);
 #ifdef __cplusplus
 }
 #endif

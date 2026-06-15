@@ -173,4 +173,159 @@ bool DinoBackbone::forward(const std::vector<float>& input_chw, int H, int W,
     }
     return true;
 }
+
+bool DinoBackbone::forward_mv(const std::vector<std::vector<float>>& views_chw, int H, int W,
+                              std::vector<std::vector<std::vector<float>>>& feats,
+                              std::vector<std::vector<std::vector<float>>>& cam_tokens){
+    const auto& c = ml_.config();
+    const int patch=(int)c.patch_size, gh=H/patch, gw=W/patch;
+    const int embed=(int)c.embed_dim, heads=(int)c.num_heads, hd=(int)c.head_dim;
+    const int Npatch=gh*gw, Ntok=1+Npatch;
+    const int S=(int)views_chw.size();
+    const float eps=c.ln_eps;
+
+    // Per-view RoPE position sets (identical across views: same patch grid).
+    std::vector<float> pos_local(2*Ntok, 0.f), pos_nodiff(2*Ntok, 0.f);
+    for (int t=1;t<Ntok;++t){ int idx=t-1; int row=idx/gw, col=idx%gw;
+        pos_local[2*t+0]=(float)(row+1); pos_local[2*t+1]=(float)(col+1);
+        pos_nodiff[2*t+0]=1.f;           pos_nodiff[2*t+1]=1.f; }
+    RopeTables rt_local = build_rope_tables(pos_local, Ntok, hd, c.rope_freq);
+    // Global attention sees all S*Ntok tokens (view-major). RoPE = pos_nodiff tiled S times.
+    std::vector<float> pos_nodiff_g(2*(size_t)Ntok*S, 0.f);
+    for (int s=0;s<S;++s) for (int t=0;t<Ntok;++t){
+        pos_nodiff_g[2*((size_t)s*Ntok+t)+0]=pos_nodiff[2*t+0];
+        pos_nodiff_g[2*((size_t)s*Ntok+t)+1]=pos_nodiff[2*t+1]; }
+    RopeTables rt_nodiff_g = build_rope_tables(pos_nodiff_g, Ntok*S, hd, c.rope_freq);
+
+    std::vector<float> pos = interp_pos_embed(gh, gw);
+
+    // Camera token slots: ref = slot 0, src = slot 1 (camera_token ne0=embed, ne1=2).
+    ggml_tensor* camt = ml_.tensor("vit.camera_token");
+    std::vector<float> cam_ref(embed, 0.f), cam_src(embed, 0.f);
+    if (camt){ const float* cp=(const float*)camt->data;
+        for (int e=0;e<embed;++e){ cam_ref[e]=cp[e]; cam_src[e]=cp[(size_t)embed+e]; } }
+
+    const std::vector<int32_t>& outL = c.out_layers;
+    const size_t NL = outL.size();
+    feats.assign(NL, std::vector<std::vector<float>>(S));
+    cam_tokens.assign(NL, std::vector<std::vector<float>>(S));
+
+    // Per-out-layer captures of the FULL [embed,Ntok,S] local_x and x tensors.
+    std::vector<std::vector<float>> cap_local(NL), cap_x(NL);
+
+    GraphInputPool pool;
+    std::vector<float> throwaway;
+    bool ok = be_.forward_capture([&](ggml_context* ctx) -> ggml_tensor* {
+        const int64_t pne[2]={embed, Ntok};
+        ggml_tensor* pe = be_.add_graph_input_nd(ctx, pool, pos.data(), pne, 2);
+        // Build per-view tokens, concat along dim 2 -> [embed, Ntok, S] (view-major).
+        ggml_tensor* x = nullptr;
+        for (int s=0;s<S;++s){
+            const int64_t ine[4]={W,H,3,1};
+            ggml_tensor* img = be_.add_graph_input_nd(ctx, pool, views_chw[s].data(), ine, 4);
+            ggml_tensor* xv = ggml_conv_2d(ctx, ml_.tensor("vit.patch_embed.weight"), img, patch,patch,0,0,1,1);
+            xv = ggml_reshape_2d(ctx, xv, (int64_t)Npatch, embed);
+            xv = ggml_cont(ctx, ggml_transpose(ctx, xv));
+            xv = ggml_add(ctx, xv, ml_.tensor("vit.patch_embed.bias"));
+            ggml_tensor* cls = ggml_reshape_2d(ctx, ml_.tensor("vit.cls_token"), embed, 1);
+            xv = ggml_concat(ctx, cls, xv, 1);            // [embed, Ntok]
+            xv = ggml_add(ctx, xv, pe);
+            xv = ggml_reshape_3d(ctx, xv, embed, Ntok, 1);
+            x = (s==0)? xv : ggml_concat(ctx, x, xv, 2);
+        }
+
+        // RoPE inputs (local + global nodiff) and camera-token slots.
+        ggml_tensor *clb,*slb,*cng,*sng;
+        build_rope_inputs(ctx, be_, pool, rt_local,    clb, slb);
+        build_rope_inputs(ctx, be_, pool, rt_nodiff_g, cng, sng);
+        const int64_t camne[2]={embed,1};
+        ggml_tensor* cam_ref_in = be_.add_graph_input_nd(ctx, pool, cam_ref.data(), camne, 2);
+        ggml_tensor* cam_src_in = be_.add_graph_input_nd(ctx, pool, cam_src.data(), camne, 2);
+
+        ggml_tensor* local_x = x;
+        for (int i=0;i<(int)c.depth;++i){
+            // Cam-token overwrite BEFORE block i==alt_start: view0 t0<-ref, views>=1 t0<-src.
+            if (c.alt_start>=0 && i==c.alt_start){
+                ggml_tensor* newx=nullptr;
+                for (int s=0;s<S;++s){
+                    ggml_tensor* vs = ggml_cont(ctx, ggml_view_2d(ctx, x, embed, Ntok,
+                                                    x->nb[1], (size_t)s*x->nb[2]));
+                    ggml_tensor* rest = ggml_cont(ctx, ggml_view_2d(ctx, vs, embed, Ntok-1,
+                                                    vs->nb[1], vs->nb[1]));
+                    ggml_tensor* cam = (s==0)? cam_ref_in : cam_src_in;
+                    ggml_tensor* nv = ggml_concat(ctx, cam, rest, 1);   // [embed,Ntok]
+                    nv = ggml_reshape_3d(ctx, nv, embed, Ntok, 1);
+                    newx = (s==0)? nv : ggml_concat(ctx, newx, nv, 2);
+                }
+                x = newx;
+            }
+            const bool global  = (c.alt_start>=0 && i>=c.alt_start && (i%2==1));
+            const bool use_rope = (c.rope_start>=0 && i>=c.rope_start);
+            BlockWeights bw = load_block(ml_, i);
+            if (global){
+                // Cross-view: flatten [embed,Ntok,S] -> [embed,Ntok*S] (view-major), one attention.
+                ggml_tensor* cb = use_rope? cng : nullptr;
+                ggml_tensor* sb = use_rope? sng : nullptr;
+                ggml_tensor* xf = ggml_reshape_2d(ctx, ggml_cont(ctx, x), embed, (int64_t)Ntok*S);
+                xf = vit_block(ctx, xf, bw, heads, hd, eps, cb, sb);
+                // Materialize as a real (non-view) tensor: a bare reshape view's backing
+                // buffer can be reused by the allocator, corrupting intermediate captures.
+                x  = ggml_cont(ctx, ggml_reshape_3d(ctx, ggml_cont(ctx, xf), embed, Ntok, S));
+            } else {
+                // Local: per-view independent attention.
+                ggml_tensor* cb = use_rope? clb : nullptr;
+                ggml_tensor* sb = use_rope? slb : nullptr;
+                ggml_tensor* nx=nullptr;
+                for (int s=0;s<S;++s){
+                    ggml_tensor* vs = ggml_cont(ctx, ggml_view_2d(ctx, x, embed, Ntok,
+                                                    x->nb[1], (size_t)s*x->nb[2]));
+                    vs = vit_block(ctx, vs, bw, heads, hd, eps, cb, sb);
+                    vs = ggml_reshape_3d(ctx, vs, embed, Ntok, 1);
+                    nx = (s==0)? vs : ggml_concat(ctx, nx, vs, 2);
+                }
+                x = nx;
+                local_x = x;
+            }
+            for (size_t o=0;o<NL;++o) if (outL[o]==i){
+                be_.capture(local_x, &cap_local[o]);
+                be_.capture(x,       &cap_x[o]);
+            }
+        }
+        return x;
+    }, throwaway);
+    if (!ok) return false;
+
+    // Host post-process per view (matches the S=1 path, repeated per view-slice).
+    ggml_tensor* nw = ml_.tensor("vit.norm.weight");
+    ggml_tensor* nb = ml_.tensor("vit.norm.bias");
+    const float* nwp=(const float*)nw->data;
+    const float* nbp=(const float*)nb->data;
+    auto layernorm_host=[&](const float* row)->std::vector<float>{
+        double mean=0; for(int e=0;e<embed;++e) mean+=row[e]; mean/=embed;
+        double var=0; for(int e=0;e<embed;++e){ double d=row[e]-mean; var+=d*d; } var/=embed;
+        double inv=1.0/std::sqrt(var+(double)eps); std::vector<float> o(embed);
+        for(int e=0;e<embed;++e) o[e]=(float)((row[e]-mean)*inv)*nwp[e]+nbp[e];
+        return o;
+    };
+    const size_t view_stride=(size_t)Ntok*embed;
+    for (size_t o=0;o<NL;++o){
+        for (int s=0;s<S;++s){
+            const float* lx=&cap_local[o][(size_t)s*view_stride]; // [embed,Ntok]
+            const float* xx=&cap_x[o][(size_t)s*view_stride];
+            std::vector<float> camcat((size_t)2*embed);
+            for(int e=0;e<embed;++e){ camcat[e]=lx[e]; camcat[embed+e]=xx[e]; }
+            cam_tokens[o][s]=std::move(camcat);
+            std::vector<float> f((size_t)Npatch*2*embed);
+            for(int t=1;t<Ntok;++t){
+                const float* lrow=&lx[(size_t)t*embed];
+                const float* xrow=&xx[(size_t)t*embed];
+                std::vector<float> no=layernorm_host(xrow);
+                float* dst=&f[(size_t)(t-1)*2*embed];
+                for(int e=0;e<embed;++e){ dst[e]=lrow[e]; dst[embed+e]=no[e]; }
+            }
+            feats[o][s]=std::move(f);
+        }
+    }
+    return true;
+}
 }

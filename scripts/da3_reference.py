@@ -87,6 +87,25 @@ def fixed_input(seed=0):
     t = torch.from_numpy(img).permute(2, 0, 1)[None, None]   # (1,1,3,H,W)
     return t.contiguous(), raw
 
+def fixed_input_multiview(S=2, seed=0):
+    """Deterministic S-view normalized input (1,S,3,224,224) + list of raw uint8 (224,224,3).
+    Each view is a DIFFERENT structured (non-noise) image so cross-view attention has real signal."""
+    mean = np.array([0.485, 0.456, 0.406], np.float32); std = np.array([0.229, 0.224, 0.225], np.float32)
+    views = []; raws = []
+    for v in range(S):
+        yy, xx = np.mgrid[0:FIX_H, 0:FIX_W].astype(np.float32)
+        # vary the pattern per view deterministically
+        r = (np.sin((xx + v * 23) / 30.0) * 0.5 + 0.5)
+        g = (np.cos((yy + v * 17) / 40.0) * 0.5 + 0.5)
+        b = ((xx + yy + v * 50) / (2 * FIX_W)) % 1.0
+        arr = np.stack([r, g, b], -1)
+        arr[60:120, 60 + v * 20:120 + v * 20, :] = 0.9
+        raw = (arr * 255).astype(np.uint8); raws.append(raw)
+        x = (raw.astype(np.float32) / 255.0 - mean) / std
+        views.append(torch.from_numpy(x).permute(2, 0, 1))
+    t = torch.stack(views, 0)[None].contiguous()   # (1,S,3,224,224)
+    return t, raws
+
 if __name__ == "__main__":
     _, net = load_model()
     # Structural assertions: net is the DepthAnything3Net with a 12-block, 768-dim ViT.
