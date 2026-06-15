@@ -1,0 +1,42 @@
+#pragma once
+#include "ggml.h"
+#include "gguf.h"
+#include <string>
+#include <vector>
+#include <unordered_map>
+
+namespace da {
+class Backend;
+
+struct Config {
+    uint32_t patch_size = 14;
+    uint32_t embed_dim = 0, depth = 0, num_heads = 0, head_dim = 0, mlp_hidden = 0;
+    uint32_t num_register = 0, pos_embed_grid = 0;
+    int32_t  alt_start = -1, rope_start = -1, qknorm_start = -1;
+    float    init_values = 0.f, rope_freq = 100.f, ln_eps = 1e-6f, interp_offset = 0.1f;
+    bool     cat_token = true, qkv_bias = true, interp_antialias = false;
+    std::vector<int32_t> out_layers;
+    std::vector<float>   img_mean, img_std;
+    std::string checkpoint_name;
+};
+
+class ModelLoader {
+public:
+    ModelLoader() = default;
+    ~ModelLoader();
+    ModelLoader(const ModelLoader&) = delete;
+    ModelLoader& operator=(const ModelLoader&) = delete;
+
+    bool load(const std::string& path);
+    const Config& config() const { return cfg_; }
+    ggml_tensor* tensor(const std::string& name) const;
+    bool offload_weights(Backend& be);
+private:
+    Config cfg_;
+    gguf_context* gguf_ = nullptr;
+    ggml_context* ctx_  = nullptr;
+    std::unordered_map<std::string, ggml_tensor*> tensors_;
+    ggml_context* device_ctx_ = nullptr;
+    ggml_backend_buffer* gpu_buf_ = nullptr;
+};
+} // namespace da
