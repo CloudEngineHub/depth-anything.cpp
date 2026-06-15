@@ -44,6 +44,8 @@ KV = {
     "head.down_ratio":      f"{ARCH}.head.down_ratio",
     "head.activation":      f"{ARCH}.head.activation",
     "head.conf_activation": f"{ARCH}.head.conf_activation",
+    # camera pose decoder (cam_dec MLP)
+    "cam.dim_in":           f"{ARCH}.cam.dim_in",
 }
 
 def rename_backbone(name: str):
@@ -120,4 +122,30 @@ def rename_head(name: str):
         sub = {"0": "out2a", "2": "out2b"}.get(m.group(1))
         if sub is not None:
             return f"head.scratch.{sub}.{m.group(2)}"
+    return None
+
+
+def rename_cam(name: str):
+    """HF CameraDec param name (already without 'cam_dec.' prefix, e.g.
+    'backbone.0.weight', 'fc_t.bias') -> GGUF tensor name, or None if unknown.
+
+    Maps the default cam_dec MLP:
+        backbone.0.{weight,bias} -> cam.bb0.{weight,bias}   (Linear 1536->1536)
+        backbone.2.{weight,bias} -> cam.bb2.{weight,bias}   (Linear 1536->1536)
+        fc_t.{weight,bias}       -> cam.fc_t.{weight,bias}  (Linear 1536->3)
+        fc_qvec.{weight,bias}    -> cam.fc_q.{weight,bias}   (Linear 1536->4)
+        fc_fov.0.{weight,bias}   -> cam.fc_fov.{weight,bias} (Linear 1536->2)
+    """
+    m = re.match(r"^backbone\.(0|2)\.(weight|bias)$", name)
+    if m:
+        return f"cam.bb{m.group(1)}.{m.group(2)}"
+    m = re.match(r"^fc_t\.(weight|bias)$", name)
+    if m:
+        return f"cam.fc_t.{m.group(1)}"
+    m = re.match(r"^fc_qvec\.(weight|bias)$", name)
+    if m:
+        return f"cam.fc_q.{m.group(1)}"
+    m = re.match(r"^fc_fov\.0\.(weight|bias)$", name)
+    if m:
+        return f"cam.fc_fov.{m.group(1)}"
     return None
