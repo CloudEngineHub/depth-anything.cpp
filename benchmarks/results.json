@@ -1,0 +1,86 @@
+{
+  "machine": {
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "logical_cpus": 20,
+    "ram_gb": 84.4,
+    "threads_used": 8,
+    "repeat": 6
+  },
+  "configs": [
+    {
+      "engine": "PyTorch",
+      "quant": "f32",
+      "model_size_mb": 516.4318351745605,
+      "load_ms": 717.4,
+      "infer_ms_224": 119.9,
+      "p90_ms_224": 123.6,
+      "infer_ms_504": 429.1,
+      "p90_ms_504": 433.1,
+      "rss_mb": 1327.9,
+      "speedup_504_vs_torch": 1.0,
+      "speedup_224_vs_torch": 1.0
+    },
+    {
+      "engine": "C++/ggml",
+      "quant": "f32",
+      "model_size_mb": 393.0,
+      "load_ms": 109.3,
+      "infer_ms_224": 242.4,
+      "p90_ms_224": 262.9,
+      "infer_ms_504": 857.8,
+      "p90_ms_504": 949.0,
+      "rss_mb": 1086.2,
+      "speedup_504_vs_torch": 0.5,
+      "speedup_224_vs_torch": 0.49
+    },
+    {
+      "engine": "C++/ggml",
+      "quant": "q8_0",
+      "model_size_mb": 141.8,
+      "load_ms": 34.7,
+      "infer_ms_224": 194.5,
+      "p90_ms_224": 228.2,
+      "infer_ms_504": 752.3,
+      "p90_ms_504": 884.4,
+      "rss_mb": 834.7,
+      "speedup_504_vs_torch": 0.57,
+      "speedup_224_vs_torch": 0.62
+    },
+    {
+      "engine": "C++/ggml",
+      "quant": "q4_k",
+      "model_size_mb": 99.1,
+      "load_ms": 23.7,
+      "infer_ms_224": 192.9,
+      "p90_ms_224": 209.0,
+      "infer_ms_504": 712.1,
+      "p90_ms_504": 845.0,
+      "rss_mb": 792.2,
+      "speedup_504_vs_torch": 0.6,
+      "speedup_224_vs_torch": 0.62
+    }
+  ],
+  "pose_configs": [
+    {
+      "engine": "C++/ggml",
+      "quant": "f32",
+      "depth_pose_ms_504": 819.1,
+      "depth_only_ms_504": 857.8,
+      "pose_overhead_ms": -38.7
+    },
+    {
+      "engine": "C++/ggml",
+      "quant": "q8_0",
+      "depth_pose_ms_504": 762.0,
+      "depth_only_ms_504": 752.3,
+      "pose_overhead_ms": 9.7
+    },
+    {
+      "engine": "C++/ggml",
+      "quant": "q4_k",
+      "depth_pose_ms_504": 739.5,
+      "depth_only_ms_504": 712.1,
+      "pose_overhead_ms": 27.4
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 #include "cli.hpp"
 #include <cstdio>
+#include <cstdlib>
 namespace da { namespace cli {
 void print_help(){
     std::printf(
         "usage:\n"
         "  da3-cli info  --model <gguf>\n"
-        "  da3-cli depth --model <gguf> --input <img> [--pfm <out.pfm>] [--png <out.png>] [--pose <out.json>] [--no-invert]\n"
+        "  da3-cli depth --model <gguf> --input <img> [--pfm <out.pfm>] [--png <out.png>] [--pose <out.json>] [--no-invert] [--legacy-resize] [--threads N] [--repeat N]\n"
         "  da3-cli depth --model <anyview.gguf> --metric-model <metric.gguf> --input <img> [--pfm <out.pfm>]   (nested metric-scale depth)\n"
         "  da3-cli depth --model <gguf> --input a.png --input b.png [--out-prefix out] [--no-invert]   (multi-view)\n"
         "  da3-cli reconstruct --model <giant.gguf> --input <img> --ply <out.ply> [--pose <out.json>]\n"
@@ -37,6 +38,9 @@ Parsed parse(int argc, char** argv){
             else if (a == "--pose" && i+1<argc){ r.output_pose = argv[++i]; }
             else if (a == "--out-prefix" && i+1<argc){ r.out_prefix = argv[++i]; }
             else if (a == "--no-invert"){ r.invert = false; }
+            else if (a == "--legacy-resize"){ r.legacy_resize = true; }
+            else if (a == "--threads" && i+1<argc){ r.n_threads = std::atoi(argv[++i]); }
+            else if (a == "--repeat" && i+1<argc){ r.repeat = std::atoi(argv[++i]); }
             else { r.error = "unknown flag: " + a; return r; }
         }
         if (r.model.empty()) r.error = "depth: --model required";

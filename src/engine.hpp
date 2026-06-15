@@ -36,6 +36,21 @@ public:
                std::vector<float>& conf_out, int& H, int& W);
     bool depth_image(const Image& img, std::vector<float>& depth_out,
                      std::vector<float>& conf_out, int& H, int& W);
+    // Native-resolution path: uses the REAL DA3 resize policy (preprocess_real,
+    // upper_bound longest->target, round-to-patch, cv2 cubic/area + ImageNet
+    // normalize) instead of the legacy floor-to-patch preprocess. This is the
+    // production path for arbitrary-resolution real photos. H,W set to the DA3
+    // processed dims (long side ~target, both multiples of patch_size).
+    bool depth_native(const std::string& image_path, std::vector<float>& depth_out,
+                      std::vector<float>& conf_out, int& H, int& W);
+    bool depth_native_image(const Image& img, std::vector<float>& depth_out,
+                            std::vector<float>& conf_out, int& H, int& W);
+    // Native-resolution depth + pose (one backbone pass).
+    bool depth_pose_native(const Image& img, std::vector<float>& depth, std::vector<float>& conf,
+                           std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);
+    bool depth_pose_native_path(const std::string& image_path, std::vector<float>& depth,
+                                std::vector<float>& conf, std::array<float,12>& ext,
+                                std::array<float,9>& intr, int& H, int& W);
     // Full pipeline incl pose. ext = 3x4 row-major (12), intr = 3x3 row-major (9).
     bool depth_pose(const Image& img, std::vector<float>& depth, std::vector<float>& conf,
                     std::array<float,12>& ext, std::array<float,9>& intr, int& H, int& W);

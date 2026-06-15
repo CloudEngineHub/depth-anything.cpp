@@ -108,6 +108,8 @@ bool ModelLoader::load(const std::string& path){
     }
     cfg_.img_mean        = kv_f32_arr(gguf_, DA_KV_IMG_MEAN);
     cfg_.img_std         = kv_f32_arr(gguf_, DA_KV_IMG_STD);
+    cfg_.img_resize_target = kv_u32(gguf_, DA_KV_IMG_RESIZE_TARGET, 504);
+    cfg_.img_resize_mode = kv_str(gguf_, DA_KV_IMG_RESIZE_MODE, "upper_bound");
     cfg_.checkpoint_name = kv_str(gguf_, DA_KV_CHECKPOINT_NAME);
 
     const int64_t nt = gguf_get_n_tensors(gguf_);
