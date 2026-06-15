@@ -10,6 +10,7 @@
 #include "gs_head.hpp"
 #include "gs_adapter.hpp"
 #include "nested.hpp"
+#include "compute_mode.hpp"
 
 namespace da {
 std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
@@ -17,6 +18,8 @@ std::unique_ptr<Engine> Engine::load(const std::string& path, int n_threads){
     if (!e->ml_.load(path)) { DA_LOG("engine: load failed"); return nullptr; }
     e->be_.set_n_threads(n_threads > 0 ? n_threads : 1);
     if (!e->ml_.offload_weights(e->be_)) { DA_LOG("engine: offload failed"); return nullptr; }
+    // Route graph builders to GPU-friendly standard ops iff weights are device-resident.
+    da::set_gpu_mode(e->be_.is_offloading());
     return e;
 }
 std::unique_ptr<Engine> Engine::load_nested(const std::string& anyview_gguf,

@@ -1,5 +1,6 @@
 #include "attention.hpp"
 #include "ggml_extend.hpp"
+#include "compute_mode.hpp"
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -8,16 +9,28 @@ namespace da {
 // (ggml_flash_attn_ext fusion with F32 k/v — ~24% faster backbone, bit-tight
 // parity with the manual path). "manual" forces the old materialized-scores
 // path; "skip" is a no-op (wrong output) used only to bound the attention-core
-// cost in profiling. Read once.
+// cost in profiling.
+//
+// The explicit DA_ATTN env override takes precedence (read once). Otherwise:
+// in GPU mode use the MANUAL path (plain mul_mat/soft_max_ext, all CUDA-backed
+// F32 ops) — the CPU-tuned F32-kv flash config may not map cleanly to the CUDA
+// flash kernel. On CPU (gpu_mode() false) the default stays Flash, so the CPU
+// path is unchanged.
 enum class AttnMode { Manual, Flash, Skip };
 static AttnMode attn_mode(){
-    static AttnMode m = []{
+    static const int env = []{
         const char* e = std::getenv("DA_ATTN");
-        if (e && std::strcmp(e, "manual") == 0) return AttnMode::Manual;
-        if (e && std::strcmp(e, "skip")   == 0) return AttnMode::Skip;
-        return AttnMode::Flash;
+        if (e && std::strcmp(e, "manual") == 0) return 1;  // forced manual
+        if (e && std::strcmp(e, "skip")   == 0) return 2;  // forced skip
+        if (e && std::strcmp(e, "flash")  == 0) return 3;  // forced flash
+        return 0;                                          // unset -> auto
     }();
-    return m;
+    switch (env) {
+        case 1:  return AttnMode::Manual;
+        case 2:  return AttnMode::Skip;
+        case 3:  return AttnMode::Flash;
+        default: return da::gpu_mode() ? AttnMode::Manual : AttnMode::Flash;
+    }
 }
 AttnWeights load_attn(const ModelLoader& ml, int i){
     auto t=[&](const char* s){ return ml.tensor("vit.blk."+std::to_string(i)+"."+s); };

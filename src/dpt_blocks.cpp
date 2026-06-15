@@ -1,5 +1,6 @@
 #include "dpt_blocks.hpp"
 #include "winograd.hpp"
+#include "compute_mode.hpp"
 #include <cstdlib>
 #include <cstring>
 
@@ -27,13 +28,18 @@ ggml_tensor* conv2d(ggml_context* ctx, ggml_tensor* w, ggml_tensor* b, ggml_tens
     // A/B via DA_CONV: winograd|direct|im2col|auto.
     const bool wino_ok = (w->ne[0] == 3 && w->ne[1] == 3 && stride == 1 &&
                           w->type == GGML_TYPE_F32 && x->type == GGML_TYPE_F32);
-    bool use_wino = wino_ok;   // auto default
-    bool direct = kgt1;        // im2col for 1x1, direct otherwise (non-winograd path)
-    if (mode) {
-        if (!std::strcmp(mode,"winograd"))   { use_wino = wino_ok; }
+    // GPU mode: the Winograd custom op is a CPU-only ggml_custom_4d, so routing
+    // 3x3 convs through it on a GPU graph would force GPU->CPU->GPU round-trips
+    // every conv. Use ggml_conv_2d_direct instead (it has a CUDA kernel). On CPU
+    // (gpu_mode() false) Winograd stays the auto default — CPU path unchanged.
+    const bool gpu = da::gpu_mode();
+    bool use_wino = wino_ok && !gpu;     // auto default: winograd on CPU only
+    bool direct   = kgt1 || (gpu && wino_ok);  // im2col for 1x1; direct for 3x3 on GPU
+    if (mode) {                           // explicit DA_CONV override takes precedence
+        if (!std::strcmp(mode,"winograd"))   { use_wino = wino_ok; direct = kgt1; }
         else if (!std::strcmp(mode,"direct")){ use_wino = false; direct = true; }
         else if (!std::strcmp(mode,"im2col")){ use_wino = false; direct = false; }
-        // "auto" (or anything else) keeps the winograd auto default.
+        // "auto" (or anything else) keeps the gpu/cpu auto default above.
     }
     ggml_tensor* y;
     if (use_wino)      y = winograd_conv3x3(ctx, w, x, pad);

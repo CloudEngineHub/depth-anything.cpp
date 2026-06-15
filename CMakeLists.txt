@@ -27,6 +27,12 @@ set(GGML_LLAMAFILE ${DA_GGML_LLAMAFILE} CACHE BOOL "" FORCE)
 set(GGML_CUDA   ${DA_GGML_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_METAL  ${DA_GGML_METAL}  CACHE BOOL "" FORCE)
 set(GGML_VULKAN ${DA_GGML_VULKAN} CACHE BOOL "" FORCE)
+# CUDA-only: if the user did not pin target arch(s), default to "native" so the
+# build targets the GPU on the build host (e.g. the GB10/Blackwell DGX). Guarded
+# behind DA_GGML_CUDA so a CPU-only build never touches CUDA settings.
+if(DA_GGML_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA target architecture(s)")
+endif()
 add_subdirectory(third_party/ggml EXCLUDE_FROM_ALL)
 
 set(DA_SOURCES

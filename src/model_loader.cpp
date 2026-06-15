@@ -1,8 +1,32 @@
 #include "model_loader.hpp"
 #include "da_gguf_keys.h"
 #include "common.hpp"
+#include "compute_mode.hpp"
+#include "backend.hpp"
+
+#include "ggml-backend.h"
+
+#include <utility>
 
 namespace da {
+
+// --- Global GPU compute-mode flag (see compute_mode.hpp) -------------------
+static bool g_gpu_mode = false;
+void set_gpu_mode(bool on){ g_gpu_mode = on; }
+bool gpu_mode(){ return g_gpu_mode; }
+
+// Weights read directly on the HOST via ->data during graph build (they feed
+// host-computed graph INPUTS, not graph nodes), so they MUST stay in
+// host-accessible memory and are never mirrored to the device:
+//   - "vit.pos_embed"   : host bicubic interp in DinoBackbone::interp_pos_embed
+//   - "vit.camera_token": host camera-token inject in DinoBackbone::forward*
+//   - "vit.norm.weight" / "vit.norm.bias": host post-norm in DinoBackbone
+// (The metric branch aliases m_vit.* -> vit.* so the same names apply.)
+static bool is_host_read_tensor(const std::string& name) {
+    return name == "vit.pos_embed"   || name == "vit.camera_token" ||
+           name == "vit.norm.weight" || name == "vit.norm.bias";
+}
+
 static uint32_t kv_u32(gguf_context* g, const char* k, uint32_t d=0){
     int64_t id = gguf_find_key(g,k); return id<0 ? d : gguf_get_val_u32(g,id);
 }
@@ -38,9 +62,12 @@ static std::string kv_str(gguf_context* g, const char* k, const char* d=""){
 }
 
 ModelLoader::~ModelLoader(){
+    // Free the device buffer + its metadata ctx BEFORE the host ctx_ (which holds
+    // the host-read tensors and the source bytes the device weights were copied from).
+    if (gpu_buf_)    ggml_backend_buffer_free(gpu_buf_);
+    if (device_ctx_) ggml_free(device_ctx_);
     if (gguf_) gguf_free(gguf_);
     if (ctx_)  ggml_free(ctx_);
-    if (device_ctx_) ggml_free(device_ctx_);
 }
 
 bool ModelLoader::load(const std::string& path){
@@ -134,5 +161,59 @@ ggml_tensor* ModelLoader::tensor(const std::string& name) const {
     return it==tensors_.end() ? nullptr : it->second;
 }
 
-bool ModelLoader::offload_weights(Backend&){ return true; }  // CPU zero-copy for M0/M1; GPU mirror added in M7
+bool ModelLoader::offload_weights(Backend& be){
+    // CPU backend: no-op. Graphs keep referencing the gguf host tensors in ctx_
+    // directly (zero-copy; the CPU path is byte-identical to before this change).
+    if (!be.is_offloading()) return true;
+    if (device_ctx_) return true;                       // idempotent
+    ggml_backend_t backend = be.handle();
+    if (!backend || !ctx_){ DA_LOG("offload_weights: null backend/ctx"); return false; }
+
+    // Mirror every gguf tensor EXCEPT the host-read tensors into a no_alloc
+    // device context, allocate it on the backend, upload the bytes, and repoint
+    // tensors_[name] at the device tensor. The host-read tensors stay pointing at
+    // the original ctx_ (host) tensors so DinoBackbone's host reads keep working.
+    // ctx_ remains alive as the host source of both bytes and host-read tensors.
+    //
+    // The tensors_ map also holds metric-branch aliases (m_vit.* AND vit.* point
+    // at the SAME ggml_tensor*). De-dup by pointer so each source tensor is only
+    // mirrored/uploaded once, then repoint every alias at the shared device copy.
+    const size_t n = tensors_.size();
+    ggml_init_params dp{};
+    dp.mem_size  = ggml_tensor_overhead() * (n + 8);
+    dp.no_alloc  = true;
+    device_ctx_ = ggml_init(dp);
+    if (!device_ctx_){ DA_LOG("offload_weights: device ctx init failed"); return false; }
+
+    std::vector<std::pair<ggml_tensor*, const void*>> ups; ups.reserve(n);
+    std::unordered_map<ggml_tensor*, ggml_tensor*> src2dev; src2dev.reserve(n);
+    std::unordered_map<std::string, ggml_tensor*> newmap; newmap.reserve(n);
+    size_t n_dev = 0;
+    for (auto& kv : tensors_) {
+        if (is_host_read_tensor(kv.first)) {
+            newmap.emplace(kv.first, kv.second);        // keep host tensor as-is
+            continue;
+        }
+        ggml_tensor* s = kv.second;
+        auto it = src2dev.find(s);
+        if (it != src2dev.end()) {                      // alias of an already-mirrored tensor
+            newmap.emplace(kv.first, it->second);
+            continue;
+        }
+        ggml_tensor* d = ggml_new_tensor(device_ctx_, s->type, GGML_MAX_DIMS, s->ne);
+        ggml_set_name(d, s->name);
+        src2dev.emplace(s, d);
+        newmap.emplace(kv.first, d);
+        ups.emplace_back(d, s->data);                   // host source bytes in ctx_
+        ++n_dev;
+    }
+    gpu_buf_ = ggml_backend_alloc_ctx_tensors(device_ctx_, backend);
+    if (!gpu_buf_){ DA_LOG("offload_weights: alloc_ctx_tensors failed"); return false; }
+    for (auto& pr : ups)
+        ggml_backend_tensor_set(pr.first, pr.second, 0, ggml_nbytes(pr.first));
+    tensors_.swap(newmap);   // graphs now reference the device-resident weights
+    DA_LOG("offload_weights: %zu weights -> %s (%zu host-read tensors kept on CPU)",
+           n_dev, be.device_name().c_str(), (size_t)4);
+    return true;
+}
 } // namespace da
