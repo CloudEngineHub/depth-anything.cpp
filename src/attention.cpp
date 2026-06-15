@@ -1,7 +1,24 @@
 #include "attention.hpp"
 #include "ggml_extend.hpp"
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 namespace da {
+// A/B toggle for the QKᵀ/softmax/×V core. Default is "flash"
+// (ggml_flash_attn_ext fusion with F32 k/v — ~24% faster backbone, bit-tight
+// parity with the manual path). "manual" forces the old materialized-scores
+// path; "skip" is a no-op (wrong output) used only to bound the attention-core
+// cost in profiling. Read once.
+enum class AttnMode { Manual, Flash, Skip };
+static AttnMode attn_mode(){
+    static AttnMode m = []{
+        const char* e = std::getenv("DA_ATTN");
+        if (e && std::strcmp(e, "manual") == 0) return AttnMode::Manual;
+        if (e && std::strcmp(e, "skip")   == 0) return AttnMode::Skip;
+        return AttnMode::Flash;
+    }();
+    return m;
+}
 AttnWeights load_attn(const ModelLoader& ml, int i){
     auto t=[&](const char* s){ return ml.tensor("vit.blk."+std::to_string(i)+"."+s); };
     AttnWeights w;
@@ -28,9 +45,36 @@ ggml_tensor* attention(ggml_context* ctx, ggml_tensor* x, const AttnWeights& w,
     ggml_tensor* qp = ggml_cont(ctx, ggml_permute(ctx, q, 0,2,1,3));  // [D,tok,H]
     ggml_tensor* kp = ggml_cont(ctx, ggml_permute(ctx, k, 0,2,1,3));
     ggml_tensor* vp = ggml_cont(ctx, ggml_permute(ctx, v, 0,2,1,3));
+    const float scale = 1.0f/std::sqrt((float)D);
+    const AttnMode mode = attn_mode();
+    if (mode == AttnMode::Flash){
+        // Fused scaled QKᵀ + softmax + ×V. q/k/v already in flash layout
+        // [D, tok, H, 1] (ne0=D, ne1=tokens, ne2=heads, ne3=batch). No causal
+        // mask (full bidirectional attention). CPU fattn accepts F32 k/v, which
+        // both keeps bit-tight parity with the manual path AND avoids the cast
+        // nodes — DA_ATTN_F16 forces the F16 k/v variant for A/B (slightly
+        // faster-to-cast but loses feature parity over 12 layers).
+        const bool f16kv = std::getenv("DA_ATTN_F16") != nullptr;
+        ggml_tensor* kf = f16kv ? ggml_cast(ctx, kp, GGML_TYPE_F16) : kp;
+        ggml_tensor* vf = f16kv ? ggml_cast(ctx, vp, GGML_TYPE_F16) : vp;
+        ggml_tensor* o = ggml_flash_attn_ext(ctx, qp, kf, vf, nullptr, scale, 0.0f, 0.0f);
+        ggml_flash_attn_ext_set_prec(o, GGML_PREC_F32); // match manual F32 softmax
+        o = ggml_reshape_2d(ctx, o, embed, tok);         // out is [D,H,tok,1] -> [embed,tok]
+        return linear(ctx, w.proj_w, o, w.proj_b);
+    }
+    if (mode == AttnMode::Skip){
+        // No-op core (wrong output, valid shape): bounds the QKᵀ/softmax/×V cost.
+        // Keep qp/kp reachable (×0) so the rope cos/sin host inputs aren't pruned
+        // out of the graph (else their buffers go unallocated). These add/scale
+        // ops are trivial vs the QKᵀ/×V matmuls we are bounding out.
+        ggml_tensor* o = ggml_reshape_2d(ctx, vp, embed, tok);
+        o = ggml_add(ctx, o, ggml_scale(ctx, ggml_reshape_2d(ctx, qp, embed, tok), 0.0f));
+        o = ggml_add(ctx, o, ggml_scale(ctx, ggml_reshape_2d(ctx, kp, embed, tok), 0.0f));
+        return linear(ctx, w.proj_w, o, w.proj_b);
+    }
     ggml_tensor* sc = ggml_mul_mat(ctx, kp, qp);                      // [tok_k,tok_q,H]
     ggml_mul_mat_set_prec(sc, GGML_PREC_F32);
-    sc = ggml_soft_max_ext(ctx, sc, nullptr, 1.0f/std::sqrt((float)D), 0.0f);
+    sc = ggml_soft_max_ext(ctx, sc, nullptr, scale, 0.0f);
     ggml_tensor* vt = ggml_cont(ctx, ggml_permute(ctx, vp, 1,0,2,3)); // [tok,D,H]
     ggml_tensor* o  = ggml_mul_mat(ctx, vt, sc);                      // [D,tok_q,H]
     o = ggml_cont(ctx, ggml_permute(ctx, o, 0,2,1,3));               // [D,H,tok]
