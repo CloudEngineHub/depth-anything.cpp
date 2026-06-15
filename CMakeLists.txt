@@ -40,6 +40,7 @@ set(DA_SOURCES
     src/vit_block.cpp
     src/dino_backbone.cpp
     src/dpt_blocks.cpp
+    src/winograd.cpp
     src/dpt_head.cpp
     src/gs_head.cpp
     src/gs_adapter.cpp
@@ -61,6 +62,16 @@ endif()
 target_include_directories(depthanything
     PUBLIC  ${CMAKE_SOURCE_DIR}/include
     PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/third_party/stb)
+
+# Winograd's hot GEMV uses AVX-512 intrinsics. ggml gets these via GGML_NATIVE,
+# but our library target does not, so enable them for just winograd.cpp when the
+# host compiler supports them (falls back to a scalar path otherwise).
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mavx512f" DA_HAS_AVX512F)
+if(DA_HAS_AVX512F)
+    set_source_files_properties(src/winograd.cpp PROPERTIES
+        COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mfma")
+endif()
 target_link_libraries(depthanything PUBLIC ggml)
 
 if(DA_BUILD_CLI AND EXISTS ${CMAKE_SOURCE_DIR}/examples/cli/CMakeLists.txt)
