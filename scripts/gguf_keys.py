@@ -18,6 +18,7 @@ KV = {
     "vit.num_heads":        f"{ARCH}.vit.num_heads",
     "vit.head_dim":         f"{ARCH}.vit.head_dim",
     "vit.mlp_hidden":       f"{ARCH}.vit.mlp_hidden",
+    "vit.ffn_type":         f"{ARCH}.vit.ffn_type",        # "mlp" (fc1/fc2) or "swiglu" (w12/w3)
     "vit.num_register":     f"{ARCH}.vit.num_register_tokens",
     "vit.init_values":      f"{ARCH}.vit.init_values",
     "vit.alt_start":        f"{ARCH}.vit.alt_start",
@@ -46,6 +47,16 @@ KV = {
     "head.conf_activation": f"{ARCH}.head.conf_activation",
     # camera pose decoder (cam_dec MLP)
     "cam.dim_in":           f"{ARCH}.cam.dim_in",
+    # GSDPT 3D-Gaussian head (giant only)
+    "gs.output_dim":        f"{ARCH}.gs.output_dim",        # 38 = raw_gs(37) + conf(1)
+    "gs.features":          f"{ARCH}.gs.features",
+    "gs.out_channels":      f"{ARCH}.gs.out_channels",
+    "gs.sh_degree":         f"{ARCH}.gs.sh_degree",
+    "gs.scale_min":         f"{ARCH}.gs.scale_min",
+    "gs.scale_max":         f"{ARCH}.gs.scale_max",
+    "gs.pred_offset_depth": f"{ARCH}.gs.pred_offset_depth",
+    "gs.pred_offset_xy":    f"{ARCH}.gs.pred_offset_xy",
+    "gs.pred_color":        f"{ARCH}.gs.pred_color",
 }
 
 def rename_backbone(name: str):
@@ -72,6 +83,9 @@ def rename_backbone(name: str):
             "ls1.gamma": "ls1", "ls2.gamma": "ls2",
             "mlp.fc1.weight": "mlp_fc1.weight", "mlp.fc1.bias": "mlp_fc1.bias",
             "mlp.fc2.weight": "mlp_fc2.weight", "mlp.fc2.bias": "mlp_fc2.bias",
+            # SwiGLU FFN (giant): w12 = Linear(C->2*hidden), w3 = Linear(hidden->C)
+            "mlp.w12.weight": "mlp_w12.weight", "mlp.w12.bias": "mlp_w12.bias",
+            "mlp.w3.weight": "mlp_w3.weight", "mlp.w3.bias": "mlp_w3.bias",
         }
         if rest in table:
             return f"vit.blk.{i}.{table[rest]}"
@@ -148,4 +162,44 @@ def rename_cam(name: str):
     m = re.match(r"^fc_fov\.0\.(weight|bias)$", name)
     if m:
         return f"cam.fc_fov.{m.group(1)}"
+    return None
+
+
+def rename_gs(name: str):
+    """HF GSDPT (gs_head) param name (already without 'gs_head.' prefix, e.g.
+    'images_merger.0.weight', 'projects.0.weight',
+    'scratch.refinenet1.resConfUnit1.conv1.weight') -> GGUF tensor name, or None
+    if unknown. GSDPT is the single-head DPT plus an images_merger; structure
+    mirrors rename_head but under the 'gs.' prefix (refinenet4 has no rc1)."""
+    n = name
+    # images_merger = Sequential(Conv2d, GELU, Conv2d, GELU, Conv2d, GELU); the
+    # learned convs live at indices 0, 2, 4.
+    m = re.match(r"^images_merger\.(0|2|4)\.(weight|bias)$", n)
+    if m:
+        i = {"0": "0", "2": "1", "4": "2"}[m.group(1)]
+        return f"gs.merger.{i}.{m.group(2)}"
+    m = re.match(r"^projects\.(\d+)\.(weight|bias)$", n)
+    if m:
+        return f"gs.proj.{m.group(1)}.{m.group(2)}"
+    m = re.match(r"^resize_layers\.(\d+)\.(weight|bias)$", n)
+    if m:
+        return f"gs.resize.{m.group(1)}.{m.group(2)}"
+    m = re.match(r"^scratch\.layer(\d+)_rn\.(weight|bias)$", n)
+    if m:
+        return f"gs.scratch.layer{m.group(1)}_rn.{m.group(2)}"
+    m = re.match(
+        r"^scratch\.refinenet(\d+)\.resConfUnit(\d+)\.conv(\d+)\.(weight|bias)$", n)
+    if m:
+        i, unit, conv, wb = m.groups()
+        return f"gs.scratch.rn{i}.rc{unit}.c{conv}.{wb}"
+    m = re.match(r"^scratch\.refinenet(\d+)\.out_conv\.(weight|bias)$", n)
+    if m:
+        return f"gs.scratch.rn{m.group(1)}.out.{m.group(2)}"
+    if re.match(r"^scratch\.output_conv1\.(weight|bias)$", n):
+        return "gs.scratch.out1." + n.rsplit(".", 1)[-1]
+    m = re.match(r"^scratch\.output_conv2\.(\d+)\.(weight|bias)$", n)
+    if m:
+        sub = {"0": "out2a", "2": "out2b"}.get(m.group(1))
+        if sub is not None:
+            return f"gs.scratch.{sub}.{m.group(2)}"
     return None
