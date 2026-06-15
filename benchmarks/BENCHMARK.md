@@ -134,3 +134,26 @@ size/memory win (q4_k 99 MB, 792 MB RSS vs PyTorch 1328 MB).
    9× expansion; this is the bulk of "what oneDNN does".
 3. Link **oneDNN / libxsmm** for the head convs — literally PyTorch's kernels (biggest dep cost).
 4. **GPU offload** (CUDA/Metal/Vulkan) — makes the CPU GEMM/conv question moot; the highest-leverage path.
+
+---
+
+## CPU optimization #2: direct convolution (DPT head)
+
+Stage profiling (`DA_PROFILE=1`) showed the **DPT head** (all `Conv2d`) — not the backbone —
+is the dominant cost, because ggml ran convs as `im2col`(9× memory expansion)+`mul_mat`. ggml
+also ships `ggml_conv_2d_direct` (a native `GGML_OP_CONV_2D`, **no im2col**), the same direct-conv
+class oneDNN uses. `src/dpt_blocks.cpp::conv2d` now uses it for K>1 kernels (the 3×3 head convs)
+and keeps im2col+llamafile-sgemm for 1×1 (pure GEMM). Toggle: `DA_CONV=im2col|direct|auto`.
+
+DA3-BASE depth @504×336, 16 threads, parity-exact (max|d|=5.96e-08 vs im2col):
+
+| metric | im2col | **direct (default)** | Δ |
+|---|--:|--:|--:|
+| warm latency (serving, repeat-median) | 542 ms | **495 ms** | −9% |
+| cold latency (one-shot CLI, incl. load) | 1.12 s | **0.72 s** | −36% |
+| peak RSS | 1014 MB | **665 MB** | −34% |
+
+**Cumulative CPU result** (from the original 831 ms warm / im2col-off / 8-thread baseline):
+`GGML_LLAMAFILE` + 16 threads + direct conv → **495 ms warm (1.68× faster than the start)**,
+**0.72 s cold**, **665 MB peak** (half of PyTorch's 1328 MB). vs PyTorch warm 429 ms = 1.15×
+slower but with half the memory and faster load/cold — and the same correctness.
