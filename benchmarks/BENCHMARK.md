@@ -250,3 +250,48 @@ faster than f2b**, and it carries real accuracy risk (2.2e-4 per-conv, fractiona
 honest call: ship the variant that is **fastest AND parity-exact** → `f2b`. `f4` is kept selectable
 (`DA_WINO=f4`) and documented, but is not the default because it gives no speed win over f2b while
 adding numerical risk. `DA_WINO=f2` restores the old per-tile GEMV for A/B.
+
+## CPU optimization #6: fused ViT attention (`ggml_flash_attn_ext`) — **shipped, faster**
+
+After the head was optimized (#4/#5), the **backbone** (~230 ms warm @504) became the bigger
+half. Per ViT layer the matmuls (qkv / proj / mlp) are ~95% of the FLOPs and the attention
+QKᵀ/softmax/×V is only ~5% — so on a FLOP count the upside looked tiny. But the manual attention
+also **materializes** a 257×257 scores matrix and does several `permute`+`cont` copies per layer,
+and on CPU those memory ops are not free.
+
+**Attention-core cost, measured (DA3-BASE @504×336, 16 threads, `--repeat 12`, median warm
+backbone).** A temporary `DA_ATTN=skip` no-op (wrong output, valid shape — bypasses the
+QKᵀ/softmax/×V and its permute copies) bounds the core cost:
+
+| `DA_ATTN` | backbone ms | vs manual |
+|---|--:|--:|
+| `manual` (old default) | 242.7 | — |
+| `skip` (no-op bound) | 158.2 | core ≈ **84 ms** (~35% of backbone) |
+| `flash` (**new default**) | **179.2** | **−63 ms (−26%)** |
+
+So the attention core (compute **+** the materialized scores **+** permute/cont copies) is ~84 ms —
+far more than the 5% FLOP share, because the copies dominate. `ggml_flash_attn_ext` fuses
+scaled-QKᵀ + softmax + ×V into one streaming op (no 257×257 scores tensor, fewer copies) and
+recovers ~63 ms of that — a **26% warm-backbone speedup**. End-to-end depth infer @504 drops
+~449.9 vs 479.5 ms/iter (the head is the other ~half).
+
+**Parity (hard gate).** The flash output layout `[D, H, tok]` drops straight into the proj; qk_norm
+and 2D-RoPE stay on q,k *before* the fused op (unchanged). Crucially the CPU `flash_attn_ext`
+accepts **F32 k/v**, so no precision is lost: parity is bit-tight with the manual path.
+
+| `DA_ATTN` | k/v type | full suite | e2e max\|d\| | e2e corr |
+|---|---|:--|--:|--:|
+| `manual` | F32 | 30/30 green | 1.49e-6 | 1.000000 |
+| `flash` (**default**) | **F32** | **30/30 green** | **1.49e-6** (identical to manual) | **1.000000** |
+| `flash` + `DA_ATTN_F16=1` | F16 | 5 backbone parity tests **fail** | 1.22e-4 | 1.000000 |
+
+The F16 k/v variant (the usual llama.cpp fattn config) is slightly cheaper to feed but its error
+(~1e-4) **accumulates over 12 layers** and breaks the tight backbone feature-parity tests
+(max\|d\| ~5e-2 on raw features), even though the final depth still lands at corr=1.0. F16 is kept
+selectable (`DA_ATTN_F16=1`) for A/B but is **not** the default — F32 k/v is both faster (no `cast`
+nodes) **and** parity-exact.
+
+**Decision — `flash` (F32 k/v) is the new default.** It passes the hard gate on every axis: warm
+backbone 179 vs 243 ms (**−26%**), full suite 30/30 green, e2e corr 1.000000 with byte-for-byte the
+same depth as manual. `DA_ATTN=manual` restores the materialized-scores path for A/B; `DA_ATTN=skip`
+is the profiling no-op used to bound the core cost above.
