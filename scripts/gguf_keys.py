@@ -47,6 +47,7 @@ KV = {
     "head.conf_activation": f"{ARCH}.head.conf_activation",
     "head.sky_activation":  f"{ARCH}.head.sky_activation",   # standalone mono DPT + sky head
     "head.norm_type":       f"{ARCH}.head.norm_type",        # "idt" | "layer"
+    "head.max_depth":       f"{ARCH}.head.max_depth",      # 0/absent=relative; 20/80=metric (DA2)
     # DualDPT auxiliary ray head (opt-in via converter --with-aux)
     "head.has_aux":         f"{ARCH}.head.has_aux",          # bool: aux ray tensors present
     "head.aux_ray_dim":     f"{ARCH}.head.aux_ray_dim",      # 6 (ray channels; +1 conf = 7)

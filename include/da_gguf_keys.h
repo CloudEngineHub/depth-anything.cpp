@@ -38,6 +38,7 @@
 #define DA_KV_HEAD_CONF_ACTIVATION "depthanything3.head.conf_activation"
 #define DA_KV_HEAD_SKY_ACTIVATION "depthanything3.head.sky_activation"
 #define DA_KV_HEAD_NORM_TYPE "depthanything3.head.norm_type"
+#define DA_KV_HEAD_MAX_DEPTH "depthanything3.head.max_depth"
 #define DA_KV_HEAD_HAS_AUX "depthanything3.head.has_aux"
 #define DA_KV_HEAD_AUX_RAY_DIM "depthanything3.head.aux_ray_dim"
 #define DA_KV_HEAD_AUX_LEVELS "depthanything3.head.aux_levels"

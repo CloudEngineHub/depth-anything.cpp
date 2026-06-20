@@ -24,6 +24,8 @@ struct Config {
     uint32_t    img_resize_target = 504;          // longest/shortest-side processing resolution
     std::string img_resize_mode = "upper_bound";  // "upper_bound" | "lower_bound"
     std::string checkpoint_name;
+    float       head_max_depth = 0.f;             // DA2 metric scale (0 = relative)
+    std::string arch = "depthanything3";          // route discriminator ("depthanything2" = DA2)
 };
 
 class ModelLoader {

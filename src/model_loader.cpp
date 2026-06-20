@@ -138,6 +138,8 @@ bool ModelLoader::load(const std::string& path){
     cfg_.img_resize_target = kv_u32(gguf_, DA_KV_IMG_RESIZE_TARGET, 504);
     cfg_.img_resize_mode = kv_str(gguf_, DA_KV_IMG_RESIZE_MODE, "upper_bound");
     cfg_.checkpoint_name = kv_str(gguf_, DA_KV_CHECKPOINT_NAME);
+    cfg_.head_max_depth  = kv_f32(gguf_, DA_KV_HEAD_MAX_DEPTH, 0.f);
+    cfg_.arch            = kv_str(gguf_, DA_KV_ARCH, "depthanything3");
 
     const int64_t nt = gguf_get_n_tensors(gguf_);
     for (int64_t i=0;i<nt;++i){
