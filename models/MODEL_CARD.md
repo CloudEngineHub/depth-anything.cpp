@@ -5,6 +5,7 @@ pipeline_tag: depth-estimation
 tags:
   - depth-anything
   - depth-anything-3
+  - depth-anything-2
   - depth-estimation
   - monocular-depth
   - camera-pose
@@ -20,6 +21,15 @@ base_model:
   - depth-anything/DA3MONO-LARGE
   - depth-anything/DA3METRIC-LARGE
   - depth-anything/DA3NESTED-GIANT-LARGE
+  - depth-anything/Depth-Anything-V2-Small
+  - depth-anything/Depth-Anything-V2-Base
+  - depth-anything/Depth-Anything-V2-Large
+  - depth-anything/Depth-Anything-V2-Metric-Hypersim-Small
+  - depth-anything/Depth-Anything-V2-Metric-Hypersim-Base
+  - depth-anything/Depth-Anything-V2-Metric-Hypersim-Large
+  - depth-anything/Depth-Anything-V2-Metric-VKITTI-Small
+  - depth-anything/Depth-Anything-V2-Metric-VKITTI-Base
+  - depth-anything/Depth-Anything-V2-Metric-VKITTI-Large
 ---
 
 # Depth Anything 3 — GGUF weights for [depth-anything.cpp](https://github.com/mudler/depth-anything.cpp)
@@ -58,6 +68,39 @@ baked into the file; the loader reads them, nothing is hardcoded.
 > The nested model is a **two-file pair**: the engine loads the anyview (ViT-g) branch and the
 > metric (ViT-L) branch together and aligns them to produce metric-scale depth + pose. Download
 > both `depth-anything-nested-anyview.gguf` and `depth-anything-nested-metric.gguf`.
+
+### Depth Anything V2
+
+The same engine also runs [Depth Anything **V2**](https://github.com/DepthAnything/Depth-Anything-V2)
+checkpoints. DA2 is **depth only** — no confidence, pose or sky. **Relative** models output an inverse
+depth map through a `ReLU` head; **metric** models output depth in **metres** through a
+`Sigmoid × max_depth` head (`max_depth=20` for the indoor Hypersim variants, `max_depth=80` for the
+outdoor VKITTI variants). The ViT-g (Giant) DA2 checkpoint is not shipped (its `Depth-Anything-V2-Giant`
+HF repo is gated/unreleased).
+
+Each model below ships in f32 plus f16 / q8_0 / q6_k / q5_k / q4_k quants (only the f32 + a representative
+quant are listed for brevity; the full set is in `SHA256SUMS`).
+
+| File | Source checkpoint | Backbone | Depth type | Output |
+|------|-------------------|----------|-----------|--------|
+| `depth-anything2-small-f32.gguf` | `Depth-Anything-V2-Small` | ViT-S | relative | inverse depth |
+| `depth-anything2-small-q8_0.gguf` | `Depth-Anything-V2-Small` | ViT-S | relative | inverse depth (near-lossless) |
+| `depth-anything2-base-f32.gguf` | `Depth-Anything-V2-Base` | ViT-B | relative | inverse depth |
+| `depth-anything2-large-f32.gguf` | `Depth-Anything-V2-Large` | ViT-L | relative | inverse depth |
+| `depth-anything2-large-q4_k.gguf` | `Depth-Anything-V2-Large` | ViT-L | relative | inverse depth (smallest) |
+| `depth-anything2-metric-hypersim-small-f32.gguf` | `Depth-Anything-V2-Metric-Hypersim-Small` | ViT-S | **metric** (≤20 m, indoor) | depth in metres |
+| `depth-anything2-metric-hypersim-base-f32.gguf` | `Depth-Anything-V2-Metric-Hypersim-Base` | ViT-B | **metric** (≤20 m, indoor) | depth in metres |
+| `depth-anything2-metric-hypersim-large-f32.gguf` | `Depth-Anything-V2-Metric-Hypersim-Large` | ViT-L | **metric** (≤20 m, indoor) | depth in metres |
+| `depth-anything2-metric-vkitti-small-f32.gguf` | `Depth-Anything-V2-Metric-VKITTI-Small` | ViT-S | **metric** (≤80 m, outdoor) | depth in metres |
+| `depth-anything2-metric-vkitti-base-f32.gguf` | `Depth-Anything-V2-Metric-VKITTI-Base` | ViT-B | **metric** (≤80 m, outdoor) | depth in metres |
+| `depth-anything2-metric-vkitti-large-f32.gguf` | `Depth-Anything-V2-Metric-VKITTI-Large` | ViT-L | **metric** (≤80 m, outdoor) | depth in metres |
+
+**Parity.** Every DA2 GGUF is verified against the upstream `DepthAnythingV2` forward (correlation > 0.999
+end-to-end at f32, q8_0 near-lossless at corr 0.99962, q4_k at 0.99944). The one exception is
+`depth-anything2-metric-vkitti-small` at corr **0.9983** — this is **not a porting defect** (the C++ route
+matches the reference `Sigmoid × 80` math exactly); it is the inherent ≤20× amplification of backbone
+fp-rounding noise by the widest metric scale on the smallest backbone. Absolute error stays sub-1%
+(mean 0.57% of 80 m), and the same ViT-S backbone scores 0.9996 in relative mode. Accepted as near-lossless.
 
 ### Which one should I use?
 

@@ -43,6 +43,20 @@ Convert any of the official [Depth-Anything-3](https://huggingface.co/depth-anyt
 | `DA3METRIC-LARGE` | ViT-L | metric depth + sky | metric branch |
 | `DA3NESTED-GIANT-LARGE` | ViT-g + ViT-L | aligned **metric** depth + pose | two-branch alignment |
 
+### Depth Anything V2
+
+The same engine also runs [Depth Anything **V2**](https://huggingface.co/depth-anything) checkpoints (single-image depth only — no confidence, pose or sky). Relative models emit inverse depth (ReLU); metric models emit depth in metres (Sigmoid × `max_depth`).
+
+| Model | Backbone | Output | Notes |
+|-------|----------|--------|-------|
+| `Depth-Anything-V2-Small` | ViT-S | relative depth | smallest / fastest |
+| `Depth-Anything-V2-Base` | ViT-B | relative depth | |
+| `Depth-Anything-V2-Large` | ViT-L | relative depth | higher quality |
+| `Depth-Anything-V2-Metric-Hypersim-{Small,Base,Large}` | ViT-S/B/L | metric depth (m), indoor | `max_depth=20` |
+| `Depth-Anything-V2-Metric-VKITTI-{Small,Base,Large}` | ViT-S/B/L | metric depth (m), outdoor | `max_depth=80` |
+
+> DA2 is depth only (no pose/confidence). The ViT-g (Giant) DA2 checkpoint is not shipped — its `Depth-Anything-V2-Giant` HF repo is gated/unreleased.
+
 ---
 
 ## Performance
@@ -123,6 +137,18 @@ python scripts/convert_mono_to_gguf.py --model models/DA3MONO-LARGE --output mod
 
 # nested two-branch metric model
 python scripts/convert_nested_to_gguf.py --model models/DA3NESTED-GIANT-LARGE --output-prefix models/depth-anything-nested
+
+# Depth Anything V2 — relative (encoder vits/vitb/vitl)
+python scripts/convert_da2_to_gguf.py --encoder vitl --ckpt models/depth_anything_v2_vitl.pth \
+    --output models/depth-anything2-large-f32.gguf --name Depth-Anything-V2-Large
+
+# Depth Anything V2 — metric (add --max-depth: 20 for Hypersim/indoor, 80 for VKITTI/outdoor)
+python scripts/convert_da2_to_gguf.py --encoder vits --ckpt models/depth_anything_v2_metric_hypersim_vits.pth \
+    --output models/depth-anything2-metric-hypersim-small-f32.gguf \
+    --name Depth-Anything-V2-Metric-Hypersim-Small --max-depth 20
+python scripts/convert_da2_to_gguf.py --encoder vitl --ckpt models/depth_anything_v2_metric_vkitti_vitl.pth \
+    --output models/depth-anything2-metric-vkitti-large-f32.gguf \
+    --name Depth-Anything-V2-Metric-VKITTI-Large --max-depth 80
 ```
 
 ## Quantization

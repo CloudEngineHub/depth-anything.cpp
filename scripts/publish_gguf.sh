@@ -50,6 +50,66 @@ FILES=(
   depth-anything-metric-large-f32.gguf
   depth-anything-nested-anyview.gguf
   depth-anything-nested-metric.gguf
+
+  # Depth Anything V2 — relative (f32 + f16 + q8_0 + q6_k + q5_k + q4_k)
+  depth-anything2-small-f32.gguf
+  depth-anything2-small-f16.gguf
+  depth-anything2-small-q8_0.gguf
+  depth-anything2-small-q6_k.gguf
+  depth-anything2-small-q5_k.gguf
+  depth-anything2-small-q4_k.gguf
+  depth-anything2-base-f32.gguf
+  depth-anything2-base-f16.gguf
+  depth-anything2-base-q8_0.gguf
+  depth-anything2-base-q6_k.gguf
+  depth-anything2-base-q5_k.gguf
+  depth-anything2-base-q4_k.gguf
+  depth-anything2-large-f32.gguf
+  depth-anything2-large-f16.gguf
+  depth-anything2-large-q8_0.gguf
+  depth-anything2-large-q6_k.gguf
+  depth-anything2-large-q5_k.gguf
+  depth-anything2-large-q4_k.gguf
+
+  # Depth Anything V2 — metric Hypersim (indoor, max_depth=20)
+  depth-anything2-metric-hypersim-small-f32.gguf
+  depth-anything2-metric-hypersim-small-f16.gguf
+  depth-anything2-metric-hypersim-small-q8_0.gguf
+  depth-anything2-metric-hypersim-small-q6_k.gguf
+  depth-anything2-metric-hypersim-small-q5_k.gguf
+  depth-anything2-metric-hypersim-small-q4_k.gguf
+  depth-anything2-metric-hypersim-base-f32.gguf
+  depth-anything2-metric-hypersim-base-f16.gguf
+  depth-anything2-metric-hypersim-base-q8_0.gguf
+  depth-anything2-metric-hypersim-base-q6_k.gguf
+  depth-anything2-metric-hypersim-base-q5_k.gguf
+  depth-anything2-metric-hypersim-base-q4_k.gguf
+  depth-anything2-metric-hypersim-large-f32.gguf
+  depth-anything2-metric-hypersim-large-f16.gguf
+  depth-anything2-metric-hypersim-large-q8_0.gguf
+  depth-anything2-metric-hypersim-large-q6_k.gguf
+  depth-anything2-metric-hypersim-large-q5_k.gguf
+  depth-anything2-metric-hypersim-large-q4_k.gguf
+
+  # Depth Anything V2 — metric VKITTI (outdoor, max_depth=80)
+  depth-anything2-metric-vkitti-small-f32.gguf
+  depth-anything2-metric-vkitti-small-f16.gguf
+  depth-anything2-metric-vkitti-small-q8_0.gguf
+  depth-anything2-metric-vkitti-small-q6_k.gguf
+  depth-anything2-metric-vkitti-small-q5_k.gguf
+  depth-anything2-metric-vkitti-small-q4_k.gguf
+  depth-anything2-metric-vkitti-base-f32.gguf
+  depth-anything2-metric-vkitti-base-f16.gguf
+  depth-anything2-metric-vkitti-base-q8_0.gguf
+  depth-anything2-metric-vkitti-base-q6_k.gguf
+  depth-anything2-metric-vkitti-base-q5_k.gguf
+  depth-anything2-metric-vkitti-base-q4_k.gguf
+  depth-anything2-metric-vkitti-large-f32.gguf
+  depth-anything2-metric-vkitti-large-f16.gguf
+  depth-anything2-metric-vkitti-large-q8_0.gguf
+  depth-anything2-metric-vkitti-large-q6_k.gguf
+  depth-anything2-metric-vkitti-large-q5_k.gguf
+  depth-anything2-metric-vkitti-large-q4_k.gguf
 )
 
 echo ">> Ensuring repo $HF_REPO exists ..."
