@@ -82,7 +82,10 @@ def write_da2_gguf(net, encoder, output, checkpoint_name, max_depth=0.0):
     w.add_array(K.KV["head.out_channels"], head_out_channels)
     w.add_uint32(K.KV["head.output_dim"], 1)
     w.add_bool(K.KV["head.pos_embed"], False)
-    w.add_string(K.KV["head.activation"], "relu")
+    # Final activation: relative head ends in ReLU; metric head ends in Sigmoid
+    # (then x max_depth). The C++ route keys on max_depth>0, but the metadata is
+    # written authoritatively so the GGUF is self-describing.
+    w.add_string(K.KV["head.activation"], "sigmoid" if (max_depth and max_depth > 0) else "relu")
     w.add_string(K.KV["head.norm_type"], "idt")
     if max_depth and max_depth > 0:
         w.add_float32(K.KV["head.max_depth"], float(max_depth))
