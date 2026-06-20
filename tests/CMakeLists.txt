@@ -8,7 +8,7 @@ function(da_add_test name)
   set_tests_properties(${name} PROPERTIES
       SKIP_RETURN_CODE 77
       WORKING_DIRECTORY ${DA_ROOT}
-      ENVIRONMENT "DA_TEST_GGUF=${DA_ROOT}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${DA_ROOT}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${DA_ROOT}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${DA_ROOT}/dumps/reference_mv4.gguf;DA_TEST_GGUF_GIANT=${DA_ROOT}/models/depth-anything-giant-f32.gguf;DA_TEST_BASELINE_GIANT=${DA_ROOT}/dumps/reference_giant.gguf;DA_TEST_GGUF_METRIC=${DA_ROOT}/models/depth-anything-nested-metric.gguf;DA_TEST_GGUF_ANYVIEW=${DA_ROOT}/models/depth-anything-nested-anyview.gguf;DA_TEST_BASELINE_NESTED=${DA_ROOT}/dumps/reference_nested.gguf;DA_TEST_BASELINE_PREPROC=${DA_ROOT}/dumps/reference_preproc_real.gguf;DA_TEST_PREPROC_PNG=${DA_ROOT}/dumps/preproc_real_input.png;DA_TEST_BASELINE_NATIVE=${DA_ROOT}/dumps/reference_native.gguf;DA_TEST_NATIVE_PNG=${DA_ROOT}/dumps/native_input.png;DA_TEST_GGUF_MONO=${DA_ROOT}/models/depth-anything-mono-large-f32.gguf;DA_TEST_BASELINE_MONO=${DA_ROOT}/dumps/reference_mono.gguf;DA_TEST_MONO_PNG=${DA_ROOT}/dumps/mono_input.png;DA_TEST_GGUF_AUX=${DA_ROOT}/models/depth-anything-base-aux-f32.gguf;DA_TEST_BASELINE_RAYS=${DA_ROOT}/dumps/reference_rays.gguf;DA_TEST_BASELINE_RAY_POSE=${DA_ROOT}/dumps/reference_ray_pose.gguf")
+      ENVIRONMENT "DA_TEST_GGUF=${DA_ROOT}/models/depth-anything-base-f32.gguf;DA_TEST_BASELINE=${DA_ROOT}/dumps/reference.gguf;DA_TEST_BASELINE_MV=${DA_ROOT}/dumps/reference_mv.gguf;DA_TEST_BASELINE_MV4=${DA_ROOT}/dumps/reference_mv4.gguf;DA_TEST_GGUF_GIANT=${DA_ROOT}/models/depth-anything-giant-f32.gguf;DA_TEST_BASELINE_GIANT=${DA_ROOT}/dumps/reference_giant.gguf;DA_TEST_GGUF_METRIC=${DA_ROOT}/models/depth-anything-nested-metric.gguf;DA_TEST_GGUF_ANYVIEW=${DA_ROOT}/models/depth-anything-nested-anyview.gguf;DA_TEST_BASELINE_NESTED=${DA_ROOT}/dumps/reference_nested.gguf;DA_TEST_BASELINE_PREPROC=${DA_ROOT}/dumps/reference_preproc_real.gguf;DA_TEST_PREPROC_PNG=${DA_ROOT}/dumps/preproc_real_input.png;DA_TEST_BASELINE_NATIVE=${DA_ROOT}/dumps/reference_native.gguf;DA_TEST_NATIVE_PNG=${DA_ROOT}/dumps/native_input.png;DA_TEST_GGUF_MONO=${DA_ROOT}/models/depth-anything-mono-large-f32.gguf;DA_TEST_BASELINE_MONO=${DA_ROOT}/dumps/reference_mono.gguf;DA_TEST_MONO_PNG=${DA_ROOT}/dumps/mono_input.png;DA_TEST_GGUF_AUX=${DA_ROOT}/models/depth-anything-base-aux-f32.gguf;DA_TEST_BASELINE_RAYS=${DA_ROOT}/dumps/reference_rays.gguf;DA_TEST_BASELINE_RAY_POSE=${DA_ROOT}/dumps/reference_ray_pose.gguf;DA_TEST_GGUF_DA2=${DA_ROOT}/models/depth-anything2-large-f32.gguf;DA_TEST_BASELINE_DA2=${DA_ROOT}/dumps/reference_da2.gguf")
 endfunction()
 
 da_add_test(test_model_loader)
@@ -26,6 +26,7 @@ da_add_test(test_backbone_mv)
 da_add_test(test_backbone_mv4)
 da_add_test(test_backbone_giant)
 da_add_test(test_backbone_metric)
+da_add_test(test_backbone_da2)
 da_add_test(test_metric_head)
 da_add_test(test_nested_align)
 da_add_test(test_engine_metric)
