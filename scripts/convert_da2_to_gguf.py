@@ -9,7 +9,7 @@ gguf_keys.rename_backbone / rename_head map DA2's exact param names unchanged; D
 simply omits camera_token / q_norm / head.norm. Relative models return inverse
 depth (ReLU); metric models (Hypersim=20 indoor, VKITTI=80 outdoor) scale by
 max_depth, recorded as head.max_depth."""
-import argparse, os, sys, numpy as np, torch
+import argparse, os, sys, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import gguf
 import scripts.gguf_keys as K
@@ -87,7 +87,7 @@ def write_da2_gguf(net, encoder, output, checkpoint_name, max_depth=0.0):
     if max_depth and max_depth > 0:
         w.add_float32(K.KV["head.max_depth"], float(max_depth))
 
-    # --- backbone tensors (vit.*): strip 'pretrained.' then rename_backbone ---
+    # --- backbone tensors (vit.*): net.pretrained param names are already prefix-free, then rename_backbone ---
     written, skipped = 0, []
     for name, t in net.pretrained.named_parameters():
         if name in _DA2_SKIP_BACKBONE:

@@ -5,7 +5,7 @@ Reference: upstream DepthAnythingV2.image2tensor (cv2 INTER_CUBIC, lower_bound 5
 ensure_multiple_of 14, ImageNet norm) -> net.forward -> depth at processed res.
 C++: da3-cli depth --model <da2.gguf> --input photo --pfm out.pfm.
 Compares at the processed resolution (forward() output, before infer_image's final
-resize-to-original). PASS: corr > 0.999 and small max|d|."""
+resize-to-original). PASS: corr > 0.999 and small p999|d| (99.9th-pct |d|)."""
 import os, sys, subprocess, numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "scripts"))

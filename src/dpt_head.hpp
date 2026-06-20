@@ -33,8 +33,10 @@ public:
                    std::vector<float>& depth_out, std::vector<float>& sky_out);
 
     // DA2 relative/metric depth: single-channel DPT (output_dim==1), no UV pos-embed,
-    // no head.norm. depth = relu(logit) (DA2 output_conv2 + forward F.relu), scaled by
-    // max_depth when >0 (metric). No confidence/sky. feats: 4 vectors each [N*embed].
+    // no head.norm. The two DA2 heads differ in the final activation:
+    //   relative (max_depth<=0): depth = relu(logit)            (output_conv2 ReLU + F.relu)
+    //   metric   (max_depth>0):  depth = sigmoid(logit)*max_depth (output_conv2 Sigmoid * max_depth)
+    // No confidence/sky. feats: 4 vectors each [N*embed].
     bool depth_relative(const std::vector<std::vector<float>>& feats, int H, int W,
                         float max_depth, std::vector<float>& depth_out);
 
