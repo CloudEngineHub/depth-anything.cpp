@@ -42,6 +42,8 @@ static std::string json_escape(const std::string& s){
 // variants produce metric-scale depth; relative DualDPT (base/giant/large/small)
 // do not. Unknown -> 0.
 static bool capi_is_metric(const da::Config& cfg){
+    // DA2 metric models carry a positive head_max_depth (20/80); authoritative.
+    if (cfg.head_max_depth > 0.f) return true;
     std::string n = cfg.checkpoint_name;
     for (char& ch : n) ch = (char)std::tolower((unsigned char)ch);
     return n.find("metric") != std::string::npos ||
@@ -96,6 +98,8 @@ float* da_capi_depth_path(da_ctx* c, const char* image_path, int* out_h, int* ou
     if (c->engine->is_nested()){
         std::array<float,12> ext; std::array<float,9> intr;
         if (!capi_run_nested(c, image_path, depth, ext, intr, H, W)) return nullptr;
+    } else if (c->engine->is_da2()){
+        if (!c->engine->depth_relative_path(image_path, depth, H, W)){ c->last_error = "depth: da2 failed"; return nullptr; }
     } else if (!c->engine->depth(image_path, depth, conf, H, W)){ c->last_error = "depth: failed"; return nullptr; }
     float* p = (float*)std::malloc(depth.size() * sizeof(float));
     if (!p){ c->last_error = "depth: oom"; return nullptr; }
@@ -107,6 +111,7 @@ float* da_capi_depth_path(da_ctx* c, const char* image_path, int* out_h, int* ou
 void da_capi_free_floats(float* p){ std::free(p); }
 int da_capi_pose_path(da_ctx* c, const char* image_path, float out_ext[12], float out_intr[9]){
     if (!c || !c->engine || !image_path){ if (c) c->last_error = "pose: bad args"; return -1; }
+    if (c->engine->is_da2()){ c->last_error = "pose: da2 model has no camera pose"; return -1; }
     std::vector<float> depth, conf; std::array<float,12> ext; std::array<float,9> intr; int H = 0, W = 0;
     if (c->engine->is_nested()){
         if (!capi_run_nested(c, image_path, depth, ext, intr, H, W)) return -1;
@@ -218,6 +223,25 @@ int da_capi_depth_dense(da_ctx* c, const char* image_path, int* out_h, int* out_
         if (out_is_metric) *out_is_metric = 1;
         return 0;
     }
+    // Depth Anything V2: depth only. No conf/sky surface, no camera pose. ext/intr
+    // stay zeroed (memset above); metric iff head_max_depth > 0 (sigmoid x max_depth).
+    if (c->engine->is_da2()){
+        std::vector<float> d2;
+        if (!c->engine->depth_relative_path(image_path, d2, H, W)){
+            c->last_error = "depth_dense: da2 failed"; return -1; }
+        const size_t hw = (size_t)H * W;
+        if (hw == 0 || d2.size() != hw){ c->last_error = "depth_dense: da2 empty/size mismatch"; return -1; }
+        if (out_depth){
+            float* dptr = (float*)std::malloc(hw * sizeof(float));
+            if (!dptr){ c->last_error = "depth_dense: oom"; return -1; }
+            std::memcpy(dptr, d2.data(), hw * sizeof(float));
+            *out_depth = dptr;
+        }
+        if (out_h) *out_h = H;
+        if (out_w) *out_w = W;
+        if (out_is_metric) *out_is_metric = (c->engine->config().head_max_depth > 0.f) ? 1 : 0;
+        return 0;
+    }
     da::Image img;
     if (!da::load_image_rgb(image_path, img)){ c->last_error = "depth_dense: load image failed"; return -1; }
     const bool mono = c->engine->is_mono();
@@ -255,7 +279,7 @@ int da_capi_points(da_ctx* c, const char* image_path, float conf_thresh,
     if (!c || !c->engine || !image_path){ if (c) c->last_error = "points: bad args"; return -1; }
     if (out_xyz) *out_xyz = nullptr;
     if (out_rgb) *out_rgb = nullptr;
-    if (c->engine->is_mono()){ c->last_error = "points: mono model has no camera pose; use a DualDPT model"; return -1; }
+    if (c->engine->is_mono() || c->engine->is_da2()){ c->last_error = "points: this model has no camera pose; use a DualDPT model"; return -1; }
     std::vector<float> depth, conf; std::vector<std::array<float,9>> K; std::vector<std::array<float,16>> E;
     std::vector<uint8_t> rgb_u8; da::Image img; int H=0, W=0;
     if (!capi_export_prep(c, image_path, depth, conf, K, E, rgb_u8, img, H, W)) return -1;
