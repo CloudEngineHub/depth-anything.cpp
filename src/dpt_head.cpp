@@ -389,11 +389,19 @@ bool DptHead::depth_relative(const std::vector<std::vector<float>>& feats, int H
 
     const size_t HW = (size_t)H * W;
     if (logits.size() != HW) return false;                 // output_dim == 1
-    // DA2: relu(output_conv2) (the trailing ReLU is not a tensor in our graph) then
-    // the outer F.relu — idempotent. Metric variants multiply by max_depth.
-    const float scale = (max_depth > 0.f) ? max_depth : 1.f;
+    // The build_depth_graph output stops at output_conv2's final conv (the trailing
+    // activation is not a tensor in our graph), so we apply it here. The two DA2 heads
+    // differ in that activation:
+    //   relative: output_conv2 ends ReLU->Identity, then outer F.relu  -> relu(logit)
+    //   metric:   output_conv2 ends Sigmoid, then depth * max_depth     -> sigmoid(logit)*max_depth
     depth_out.resize(HW);
-    for (size_t i = 0; i < HW; ++i) depth_out[i] = std::max(0.0f, logits[i]) * scale;
+    if (max_depth > 0.f) {                                  // metric
+        for (size_t i = 0; i < HW; ++i)
+            depth_out[i] = (1.0f / (1.0f + std::exp(-logits[i]))) * max_depth;
+    } else {                                                // relative
+        for (size_t i = 0; i < HW; ++i)
+            depth_out[i] = std::max(0.0f, logits[i]);
+    }
     return true;
 }
 
