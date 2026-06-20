@@ -79,6 +79,21 @@ bool Engine::depth_mono_path(const std::string& image_path, std::vector<float>& 
     Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_mono: load image failed"); return false; }
     return depth_mono(img, depth_out, sky_out, H, W);
 }
+bool Engine::depth_relative(const Image& img, std::vector<float>& depth_out, int& H, int& W){
+    Preprocessed p;
+    if (!preprocess_real(img, ml_.config(), p)) { DA_LOG("depth_relative: preprocess_real failed"); return false; }
+    H = p.H; W = p.W;
+    DinoBackbone bb(ml_, be_);
+    std::vector<std::vector<float>> feats, cam_tokens;
+    if (!bb.forward(p.chw, H, W, feats, cam_tokens)) { DA_LOG("depth_relative: backbone failed"); return false; }
+    DptHead head(ml_, be_);
+    return head.depth_relative(feats, H, W, ml_.config().head_max_depth, depth_out);
+}
+bool Engine::depth_relative_path(const std::string& image_path, std::vector<float>& depth_out,
+                                 int& H, int& W){
+    Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_relative: load image failed"); return false; }
+    return depth_relative(img, depth_out, H, W);
+}
 bool Engine::depth_native(const std::string& image_path, std::vector<float>& depth_out,
                           std::vector<float>& conf_out, int& H, int& W){
     Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_native: load image failed"); return false; }

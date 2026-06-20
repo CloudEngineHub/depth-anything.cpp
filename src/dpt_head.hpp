@@ -32,6 +32,12 @@ public:
     bool depth_sky(const std::vector<std::vector<float>>& feats, int H, int W,
                    std::vector<float>& depth_out, std::vector<float>& sky_out);
 
+    // DA2 relative/metric depth: single-channel DPT (output_dim==1), no UV pos-embed,
+    // no head.norm. depth = relu(logit) (DA2 output_conv2 + forward F.relu), scaled by
+    // max_depth when >0 (metric). No confidence/sky. feats: 4 vectors each [N*embed].
+    bool depth_relative(const std::vector<std::vector<float>>& feats, int H, int W,
+                        float max_depth, std::vector<float>& depth_out);
+
     // Build the DPT depth graph from the 4 backbone out-layer feat tensors (each
     // [C, N=Npatch], ne0=channel fastest) and return the logits tensor
     // [W,H,output_dim,1]. Shared by run() (unfused: feats uploaded as graph inputs)

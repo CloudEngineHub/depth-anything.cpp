@@ -155,6 +155,17 @@ static int cmd_depth(const da::cli::Parsed& p){
         return cmd_depth_export(p, *eng);
     }
     if (p.inputs.size() > 1) return cmd_depth_multi(p, *eng);
+    // Depth Anything V2 (arch=="depthanything2"): relative/metric depth only.
+    if (eng->is_da2()){
+        std::vector<float> depth; int H, W;
+        if (!eng->depth_relative_path(p.input, depth, H, W)){ std::fprintf(stderr, "error: depth_relative failed\n"); return 1; }
+        float dmin=depth.empty()?0:depth[0], dmax=dmin;
+        for (float v : depth){ dmin=std::min(dmin,v); dmax=std::max(dmax,v); }
+        std::printf("depth %dx%d min=%.4f max=%.4f (da2)\n", W, H, dmin, dmax);
+        if(!p.output_pfm.empty()) da::write_pfm(p.output_pfm, depth, H, W);
+        if(!p.output_png.empty()) da::write_depth_png(p.output_png, depth, H, W, p.invert);
+        return 0;
+    }
     // Standalone monocular checkpoint (output_dim==1 + sky head): depth + sky,
     // no conf / pose. Auto-detected from the gguf head metadata.
     if (eng->is_mono()){

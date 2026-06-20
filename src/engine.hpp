@@ -34,6 +34,16 @@ public:
     // (output_dim==1) with a parallel sky head. Routes the CLI depth command to
     // depth_mono (depth + sky) instead of the DualDPT depth_native (depth + conf).
     bool is_mono() const;
+    // True iff this is a Depth Anything V2 checkpoint (arch=="depthanything2"):
+    // plain DINOv2 + single-channel DPT, relative or metric (head.max_depth>0).
+    // Routes the CLI depth command to depth_relative (depth only, no pose/conf/sky).
+    bool is_da2() const { return config().arch == "depthanything2"; }
+    // DA2 relative/metric depth: preprocess_real (lower_bound 518) -> backbone
+    // (cat_token=false) -> depth_relative head. depth_out [H*W] row-major at the
+    // processed resolution (== net.forward()); CLI handles resize-to-original.
+    bool depth_relative(const Image& img, std::vector<float>& depth_out, int& H, int& W);
+    bool depth_relative_path(const std::string& image_path, std::vector<float>& depth_out,
+                             int& H, int& W);
     // M1: debug entry returning backbone features for out_layers (filled in T16).
     bool backbone_features(const std::vector<float>& input_image, int H, int W,
                            std::vector<std::vector<float>>& feats_out);
