@@ -12,3 +12,8 @@ __pycache__/
 
 # recorder intermediate outputs
 /out/
+
+# demo server: compiled binary + runtime data + model fetch log
+/server/da3-server
+/.cache/
+/scripts/.fetch.log

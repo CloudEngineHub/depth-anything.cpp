@@ -5,7 +5,7 @@
 int main(){
     const char* gguf = std::getenv("DA_TEST_GGUF");
     if (!gguf) return 77;
-    if (da_capi_abi_version() != 4) return 1;
+    if (da_capi_abi_version() != 6) return 1;
     da_ctx* c = da_capi_load(gguf, 1);
     if (!c) { std::fprintf(stderr, "load failed\n"); return 1; }
     char* j = da_capi_info_json(c);

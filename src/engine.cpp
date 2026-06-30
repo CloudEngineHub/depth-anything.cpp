@@ -260,7 +260,10 @@ bool Engine::depth_pose_multi(const std::vector<Image>& imgs, std::vector<ViewRe
     H = 0; W = 0;
     for (size_t i = 0; i < imgs.size(); ++i){
         Preprocessed p;
-        if (!preprocess(imgs[i], ml_.config(), p)) { DA_LOG("depth_pose_multi: preprocess failed"); return false; }
+        // Real DA3 resize policy (longest side -> img_resize_target, round to patch),
+        // same as the single-image native path. Bounds the input resolution, so a
+        // full-res photo can't blow the graph up to tens of GB.
+        if (!preprocess_real(imgs[i], ml_.config(), p)) { DA_LOG("depth_pose_multi: preprocess failed"); return false; }
         if (i == 0) { H = p.H; W = p.W; }
         else if (p.H != H || p.W != W) { DA_LOG("depth_pose_multi: views differ in H,W"); return false; }
         views_chw.push_back(std::move(p.chw));

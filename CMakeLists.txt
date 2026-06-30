@@ -63,6 +63,8 @@ set(DA_SOURCES
     src/colmap_export.cpp
     src/cam_pose.cpp
     src/linalg.cpp
+    src/sim3.cpp
+    src/stream.cpp
     src/ray_pose.cpp
     src/nested.cpp
     src/depth_export.cpp

@@ -322,8 +322,15 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
         return false;
     }
 
-    // Inputs are allocated now (->buffer/->data set): push host data in.
+    // Inputs are allocated now (->buffer/->data set): push host data in. Skip any
+    // registered input the graph never referenced — the allocator leaves it without
+    // a buffer (e.g. cam_src_in when forward_mv runs with a single view), and
+    // uploading to it would assert "tensor buffer not set". Unreachable inputs feed
+    // nothing, so there is nothing to upload.
     for (const PendingInput& pi : impl_->pending) {
+        ggml_backend_buffer_t ib = pi.tensor->view_src ? pi.tensor->view_src->buffer
+                                                        : pi.tensor->buffer;
+        if (!ib) continue;
         ggml_backend_tensor_set(pi.tensor, pi.host, 0, pi.nbytes);
     }
     impl_->pending.clear();

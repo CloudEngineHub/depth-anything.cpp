@@ -241,6 +241,16 @@ bool DinoBackbone::build_feats_graph(ggml_context* ctx, const std::vector<float>
 
     ggml_tensor* nw = ml_.tensor("vit.norm.weight");
     ggml_tensor* nb = ml_.tensor("vit.norm.bias");
+    if (be_.is_offloading()) {
+        // vit.norm.* are kept as host gguf tensors (no backend buffer) for the
+        // host-side layernorm used by other paths. Here they feed an IN-GRAPH
+        // layernorm, so on a GPU backend they must be device-resident: a host-only
+        // operand has no device subbuffer and crashes the op kernel (on Vulkan,
+        // ggml_vk_mul -> ggml_vk_tensor_subbuffer null-derefs; CUDA happened to
+        // tolerate it). Upload them as graph inputs so they get a device buffer.
+        nw = be_.add_graph_input_nd(ctx, pool, (const float*)nw->data, nw->ne, ggml_n_dims(nw));
+        nb = be_.add_graph_input_nd(ctx, pool, (const float*)nb->data, nb->ne, ggml_n_dims(nb));
+    }
 
     // --- prepare tokens (same graph as forward()) ---
     const int64_t ine[4]={W,H,3,1};
