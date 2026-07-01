@@ -70,7 +70,7 @@ static bool capi_run_nested(da_ctx* c, const char* image_path,
 }
 
 extern "C" {
-int da_capi_abi_version(void){ return 6; }
+int da_capi_abi_version(void){ return 7; }
 da_ctx* da_capi_load(const char* path, int n_threads){
     if (!path) return nullptr;
     auto e = da::Engine::load(path, n_threads);
@@ -398,7 +398,8 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
 
 int da_capi_gaussians(da_ctx* c, const char* path, int* out_n,
                       float** out_xyz, float** out_scale, float** out_quat,
-                      float** out_rgb, float** out_opacity){
+                      float** out_rgb, float** out_opacity,
+                      float* out_intr, int* out_w, int* out_h){
     if (out_xyz) *out_xyz = nullptr;
     if (out_scale) *out_scale = nullptr;
     if (out_quat) *out_quat = nullptr;
@@ -410,6 +411,9 @@ int da_capi_gaussians(da_ctx* c, const char* path, int* out_n,
     da::Gaussians g; int H = 0, W = 0;
     if (!c->engine->reconstruct(img, g, H, W)){
         c->last_error = "gaussians: reconstruct failed (needs a GS model, e.g. DA3-GIANT)"; return -1; }
+    if (out_intr) for (int i = 0; i < 9; ++i) out_intr[i] = g.intr[i];
+    if (out_w) *out_w = W;
+    if (out_h) *out_h = H;
     const int N = g.N;
     if (N <= 0 || (int)g.means.size() < N*3 || (int)g.scales.size() < N*3 ||
         (int)g.rotations.size() < N*4 || (int)g.opacities.size() < N || (int)g.harmonics.size() < N*3*9){
@@ -423,11 +427,15 @@ int da_capi_gaussians(da_ctx* c, const char* path, int* out_n,
     if (!xyz || !scl || !quat || !rgb || !op){
         std::free(xyz); std::free(scl); std::free(quat); std::free(rgb); std::free(op);
         c->last_error = "gaussians: oom"; return -1; }
+    // Prefer the input-photo colour baked by Engine::reconstruct; SH-DC is a
+    // near-grey flat base (see gs_adapter.hpp). Fall back to SH-DC if absent.
+    const bool have_col = (int)g.colors.size() >= N*3;
     for (int i = 0; i < N; ++i){
         for (int k = 0; k < 3; ++k){ xyz[3*i+k] = g.means[3*i+k]; scl[3*i+k] = g.scales[3*i+k]; }
         for (int k = 0; k < 4; ++k) quat[4*i+k] = g.rotations[4*i+k];
         for (int ch = 0; ch < 3; ++ch){
-            double col = 0.5 + SH_C0 * (double)g.harmonics[((size_t)i*3 + ch)*9 + 0];
+            double col = have_col ? (double)g.colors[3*i+ch]
+                                  : 0.5 + SH_C0 * (double)g.harmonics[((size_t)i*3 + ch)*9 + 0];
             rgb[3*i+ch] = (float)(col < 0 ? 0 : (col > 1 ? 1 : col));
         }
         op[i] = g.opacities[i];

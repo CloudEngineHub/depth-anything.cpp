@@ -25,10 +25,23 @@ type manifestStep struct {
 	Label  string   `json:"label,omitempty"`
 }
 
+// Cam is the input camera for gaussian scenes: the pose is canonical (identity),
+// so the viewer places its eye at the origin looking down +z and uses this K
+// (pixel units at W×H) to reproduce the exact input view the gaussians composite to.
+type Cam struct {
+	Fx float32 `json:"fx"`
+	Fy float32 `json:"fy"`
+	Cx float32 `json:"cx"`
+	Cy float32 `json:"cy"`
+	W  int     `json:"w"`
+	H  int     `json:"h"`
+}
+
 type sceneManifest struct {
 	Model string         `json:"model"`
 	Mode  string         `json:"mode"`
 	Steps []manifestStep `json:"steps"`
+	Cam   *Cam           `json:"cam,omitempty"`
 }
 
 type sceneInfo struct {
@@ -264,6 +277,7 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 			return e
 		}
 		var splat []byte
+		var cam *Cam
 		err := s.infer(func() error {
 			return s.reg.WithModel(model, func(ctx uintptr, _ *ModelInfo) error {
 				g, e := s.api.Gaussians(ctx, g224)
@@ -271,6 +285,7 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 					return e
 				}
 				splat = gaussiansToSplat(g, s.maxSplats)
+				cam = &Cam{Fx: g.Fx, Fy: g.Fy, Cx: g.Cx, Cy: g.Cy, W: g.W, H: g.H}
 				return nil
 			})
 		})
@@ -281,7 +296,7 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 			return e
 		}
 		s.setJob(name, func(j *sceneJob) { j.Done, j.Kept = len(sel), 1 })
-		return writeManifest(sceneDir, sceneManifest{Model: model, Mode: mode, Steps: []manifestStep{
+		return writeManifest(sceneDir, sceneManifest{Model: model, Mode: mode, Cam: cam, Steps: []manifestStep{
 			{Splat: "acc_full.splat", Images: []string{thumb}, N: 1, Label: "gaussians · single frame"}}})
 	}
 

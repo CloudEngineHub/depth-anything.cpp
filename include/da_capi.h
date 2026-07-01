@@ -9,7 +9,9 @@ typedef struct da_ctx da_ctx;
    4: added da_capi_load_nested (two-branch metric model).
    5: added da_capi_points_multi (fused multi-view cloud) + da_capi_gaussians.
    6: added da_capi_points_stream (sliding-window streaming cloud); removed the
-      unused da_capi_depth_pose_multi. */
+      unused da_capi_depth_pose_multi.
+   7: da_capi_gaussians also returns the input camera intrinsics + processed size
+      (out_intr[9], out_w, out_h) so the viewer can render from the input view. */
 int         da_capi_abi_version(void);
 da_ctx*     da_capi_load(const char* gguf_path, int n_threads);  /* NULL on failure */
 /* Load a NESTED metric model from its two branches: the anyview (GIANT) GGUF and
@@ -100,11 +102,16 @@ int da_capi_points_stream(da_ctx* ctx, const char** image_paths, int n_images,
 /* Single-image 3D GAUSSIANS (DA3-GIANT / GS-head models only; returns -1 with a
    clear last_error otherwise). Returns world-frame (OpenCV) gaussians as parallel
    arrays: *out_xyz[3N] means, *out_scale[3N], *out_quat[4N] (wxyz), *out_rgb[3N]
-   linear colour in [0,1] from the SH DC term, *out_opacity[N]. Sets *out_n. Free
-   every returned float buffer via da_capi_free_floats. Returns 0 ok, -1 error. */
+   linear colour in [0,1] (input-photo colour; see note), *out_opacity[N]. Sets
+   *out_n. Also, when non-NULL, writes the input camera intrinsics to out_intr[9]
+   (K 3x3 row-major, pixel units) and the processed resolution to *out_w,*out_h --
+   the pose is canonical (identity) so a viewer placed at the origin looking down
+   +z with this K reproduces the input view. Free every returned float buffer via
+   da_capi_free_floats. Returns 0 ok, -1 error. */
 int da_capi_gaussians(da_ctx* ctx, const char* image_path, int* out_n,
                       float** out_xyz, float** out_scale, float** out_quat,
-                      float** out_rgb, float** out_opacity);
+                      float** out_rgb, float** out_opacity,
+                      float* out_intr, int* out_w, int* out_h);
 #ifdef __cplusplus
 }
 #endif

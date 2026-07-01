@@ -1,5 +1,5 @@
 // engine.go — purego bindings to libdepthanything (the flat C API in
-// include/da_capi.h, ABI 6). No cgo: the shared library is dlopen'd once and each
+// include/da_capi.h, ABI 7). No cgo: the shared library is dlopen'd once and each
 // model is loaded as its own da_ctx. A context is NOT thread-safe (one ggml
 // backend + compute graph), so all inference is serialized by the caller.
 package main
@@ -29,7 +29,8 @@ type capi struct {
 		ptSize float32, budget int32,
 		outN, outCounts, outXyz, outRgb, outRad unsafe.Pointer) int32
 	gaussians func(ctx uintptr, path string,
-		outN, outXyz, outScale, outQuat, outRgb, outOpacity unsafe.Pointer) int32
+		outN, outXyz, outScale, outQuat, outRgb, outOpacity,
+		outIntr, outW, outH unsafe.Pointer) int32
 }
 
 func openCAPI(libPath string) (*capi, error) {
@@ -175,22 +176,28 @@ type GS struct {
 	Quat    []float32 // 4N wxyz
 	RGB     []float32 // 3N linear [0,1]
 	Opacity []float32 // N
+	// Input camera (pose is canonical identity): K at the processed resolution.
+	Fx, Fy, Cx, Cy float32
+	W, H           int
 }
 
 // Gaussians runs the GS reconstruction on one image (DA3-GIANT only).
 func (a *capi) Gaussians(ctx uintptr, path string) (*GS, error) {
-	var n int32
+	var n, w, h int32
 	var pXyz, pScale, pQuat, pRgb, pOp uintptr
+	var intr [9]float32
 	rc := a.gaussians(ctx, path, unsafe.Pointer(&n),
 		unsafe.Pointer(&pXyz), unsafe.Pointer(&pScale), unsafe.Pointer(&pQuat),
-		unsafe.Pointer(&pRgb), unsafe.Pointer(&pOp))
+		unsafe.Pointer(&pRgb), unsafe.Pointer(&pOp),
+		unsafe.Pointer(&intr[0]), unsafe.Pointer(&w), unsafe.Pointer(&h))
 	if rc != 0 {
 		return nil, fmt.Errorf("gaussians: %s", a.lastErr(ctx))
 	}
 	np := int(n)
 	g := &GS{N: np,
 		XYZ: cFloats(pXyz, np*3), Scale: cFloats(pScale, np*3), Quat: cFloats(pQuat, np*4),
-		RGB: cFloats(pRgb, np*3), Opacity: cFloats(pOp, np)}
+		RGB: cFloats(pRgb, np*3), Opacity: cFloats(pOp, np),
+		Fx: intr[0], Fy: intr[4], Cx: intr[2], Cy: intr[5], W: int(w), H: int(h)}
 	a.freeFloats(pXyz)
 	a.freeFloats(pScale)
 	a.freeFloats(pQuat)

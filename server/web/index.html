@@ -234,6 +234,7 @@ function requestSort(view){ if(sorting||count===0) return; sorting=true;
 const _p=new URLSearchParams(location.search);
 let target=[0,0,0], yaw=+(_p.get("yaw")??0), pitch=+(_p.get("pitch")??0.05), dist=2.0, distLock=false;
 let curMode="points", orbitLimit=null;   // orbitLimit set for gaussian (input-view) scenes
+let gsCam=null;   // {fx,fy,cx,cy,w,h} input camera for gaussian scenes (pose = identity)
 function frameToData(){ if(framed||count===0) return;
   if(curMode==="gaussians"){ frameInputView(); framed=true; sortDirty=true; return; }
   let lo=[1e30,1e30,1e30],hi=[-1e30,-1e30,-1e30];
@@ -241,19 +242,15 @@ function frameToData(){ if(framed||count===0) return;
   const diag=Math.hypot(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]);
   target=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2]; if(!distLock) dist=Math.max(0.5,0.7*diag);
   orbitLimit=null; framed=true; sortDirty=true; }
-// DA3 single-image gaussians are view-synthesis primitives: their depth is spread,
-// but they composite into the sharp INPUT view (the camera sits at the world origin).
-// So frame from the origin looking at the content's median, and clamp the orbit to
-// stay near that view instead of orbiting into the (expected) depth-spread floaters.
+// DA3 single-image gaussians are view-synthesis primitives: their per-pixel depth
+// is deliberately spread, but they composite into the sharp INPUT view. The pose is
+// canonical (identity), so the input camera sits at the world origin looking down +z
+// (=-z after the OpenCV->GL flip). Put the eye exactly there and render through the
+// input intrinsics (gsCam.fx/fy, anamorphic) so every gaussian lands on its own pixel
+// and the picture resolves. A small orbit around a point 1 unit ahead gives parallax.
 function frameInputView(){
-  const step=Math.max(1,Math.floor(count/4000)); const xs=[],ys=[],zs=[];
-  for(let i=0;i<count;i+=step){ xs.push(positions[i*3]); ys.push(positions[i*3+1]); zs.push(positions[i*3+2]); }
-  const med=a=>{ a.sort((p,q)=>p-q); return a[a.length>>1]; };
-  const c=[med(xs),med(ys),med(zs)]; target=c;
-  const D=Math.hypot(c[0],c[1],c[2])||1; dist=D;              // eye lands exactly at the origin
-  const dir=[-c[0]/D,-c[1]/D,-c[2]/D];                        // target -> eye(origin)
-  pitch=Math.asin(Math.max(-1,Math.min(1,dir[1]))); yaw=Math.atan2(dir[0],dir[2]);
-  orbitLimit={yaw0:yaw,pitch0:pitch,d:0.3,dmin:D*0.5,dmax:D*1.25};
+  target=[0,0,-1]; yaw=0; pitch=0; dist=1;   // eye at the origin, looking down -z
+  orbitLimit={yaw0:0,pitch0:0,d:0.35,dmin:0.35,dmax:1.6};
 }
 const keys={}; addEventListener("keydown",e=>keys[e.key.toLowerCase()]=true); addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
 let drag=false,lx=0,ly=0;
@@ -286,8 +283,18 @@ function render(){
     if(keys["d"]||keys["arrowright"]){for(let i=0;i<3;i++)target[i]+=right[i]*speed;sortDirty=true;}
   }
   const eye=[target[0]+dist*Math.sin(yaw)*Math.cos(pitch),target[1]+dist*Math.sin(pitch),target[2]+dist*Math.cos(yaw)*Math.cos(pitch)];
-  const view=lookAt(eye,target); const aspect=canvas.width/canvas.height; const fovy=1.0;
-  const proj=perspective(fovy,aspect,0.05,100); const fy=canvas.height/(2*Math.tan(fovy/2)),fx=fy;
+  const view=lookAt(eye,target); const cw=canvas.width,ch=canvas.height; const aspect=cw/ch;
+  let proj,fx,fy;
+  if(gsCam && curMode==="gaussians"){
+    // Render through the input camera's (anamorphic) intrinsics, fitting the WxH
+    // image to canvas height (pillarboxed). p00/p11 map camera x/y to NDC exactly
+    // as the model's K would to pixels, so gaussians land on their source pixels.
+    const p11=2*gsCam.fy/gsCam.h, p00=2*gsCam.fx*ch/(gsCam.h*cw);
+    const n=0.05,f=500; proj=new Float32Array([p00,0,0,0, 0,p11,0,0, 0,0,(f+n)/(n-f),-1, 0,0,(2*f*n)/(n-f),0]);
+    fx=p00*cw/2; fy=p11*ch/2;
+  }else{
+    const fovy=1.0; proj=perspective(fovy,aspect,0.05,100); fy=ch/(2*Math.tan(fovy/2)); fx=fy;
+  }
   if(sortDirty){ requestSort(view); sortDirty=false; }
   gl.clearColor(0.043,0.051,0.063,1); gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(prog);
   gl.uniformMatrix4fv(U.view,false,view); gl.uniformMatrix4fv(U.proj,false,proj);
@@ -390,6 +397,7 @@ $("gen").onclick=async()=>{
       if(!resp.ok) throw new Error(await resp.text());
       const r=await resp.json();
       setStatus(`done · ${r.n.toLocaleString()} splats · ${r.seconds.toFixed(1)}s`);
+      curMode=mode; gsCam=r.cam||null;
       await loadSplat("/api/splat/"+r.id);
     }
   }catch(err){ setStatus(err.message,true); }
@@ -418,7 +426,7 @@ async function loadScenes(){
 async function openScene(name){
   curScene=name; document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.name===name));
   const m=await (await fetch(`/scenes-assets/${name}/manifest.json`)).json();
-  curMode=m.mode||"points";
+  curMode=m.mode||"points"; gsCam=m.cam||null;
   steps=m.steps||[]; if(!steps.length) return;
   $("playrow").classList.remove("hide"); $("steprange").max=steps.length-1;
   stepI=steps.length-1; $("steprange").value=stepI; distLock=false;

@@ -200,6 +200,7 @@ func (s *server) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 	t0 := time.Now()
 	var splat []byte
 	var nOut int
+	var cam *Cam
 	err := s.infer(func() error {
 		return s.reg.WithModel(model, func(ctx uintptr, mi *ModelInfo) error {
 			if mode == "gaussians" {
@@ -217,6 +218,7 @@ func (s *server) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 				}
 				splat = gaussiansToSplat(g, s.maxSplats)
 				nOut = g.N
+				cam = &Cam{Fx: g.Fx, Fy: g.Fy, Cx: g.Cx, Cy: g.Cy, W: g.W, H: g.H}
 				return nil
 			}
 			c, e := s.api.PointsMulti(ctx, paths, confPct, ptSize)
@@ -238,7 +240,7 @@ func (s *server) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 	}
 	id := s.storeResult(splat)
 	writeJSON(w, map[string]any{
-		"id": id, "model": model, "mode": mode,
+		"id": id, "model": model, "mode": mode, "cam": cam,
 		"n": nOut, "size": len(splat), "seconds": time.Since(t0).Seconds(),
 	})
 }

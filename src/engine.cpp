@@ -307,6 +307,24 @@ bool Engine::reconstruct(const Image& img, Gaussians& g, int& H, int& W){
     if (!gs.raw_gaussians(feats, p.chw, H, W, raw_gs, gs_conf)) { DA_LOG("reconstruct: gs_head failed"); return false; }
     GsAdapter ad;
     if (!ad.build(raw_gs, depth, gs_conf, ext, intr, H, W, g)) { DA_LOG("reconstruct: gs_adapter failed"); return false; }
+    g.ext = ext; g.intr = intr; g.H = H; g.W = W;  // input camera, for input-view rendering
+    // Colour each gaussian by its own source pixel (de-normalize p.chw, the exact
+    // model input). DA3's learned SH-DC colour is a near-grey flat base; the true
+    // photo colour gives a faithful input-view presentation (same convention as the
+    // point cloud). g.colors empty => callers fall back to SH-DC.
+    {
+        const auto& mean = ml_.config().img_mean;
+        const auto& std  = ml_.config().img_std;
+        if (mean.size() >= 3 && std.size() >= 3 && (int)p.chw.size() >= 3*H*W && g.N == H*W) {
+            const size_t HW = (size_t)H * W;
+            g.colors.resize((size_t)g.N * 3);
+            for (size_t pix = 0; pix < HW; ++pix)
+                for (int c = 0; c < 3; ++c) {
+                    float v = p.chw[(size_t)c*HW + pix] * std[c] + mean[c];
+                    g.colors[pix*3 + c] = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+                }
+        }
+    }
     return true;
 }
 bool Engine::reconstruct_path(const std::string& image_path, Gaussians& g, int& H, int& W){
