@@ -14,10 +14,12 @@
 namespace da {
 
 namespace {
-// Number of graph nodes the metadata context must hold. Ample for the MoonViT
-// tower; the per-compute metadata context + graph hash-set scale with this, so
-// keep it as small as the largest single graph needs.
-constexpr size_t kGraphSize = 16384;
+// Number of graph nodes the metadata context must hold. Sized for the heaviest
+// supported graph: a full multi-view streaming window on GIANT (40 layers) at the
+// max chunk of 24 views (~33k nodes). 16384 fit base multi-view and single-image
+// giant but overflowed giant x 12-view by a hair. The per-compute metadata context
+// + graph hash-set scale with this (~408 B/node, ~20 MB here) — cheap.
+constexpr size_t kGraphSize = 49152;
 
 struct PendingInput {
     ggml_tensor* tensor;
