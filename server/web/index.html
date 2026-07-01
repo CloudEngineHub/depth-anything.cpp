@@ -105,7 +105,7 @@
       <button data-src="video" class="on">Video</button>
       <button data-src="photos">Photos</button>
     </div>
-    <div class="drop" id="drop">click or drop a <span id="droptype">video</span> here</div>
+    <div class="drop" id="drop">click or drop a video here</div>
     <input type="file" id="file" class="hide"/>
 
     <div class="row" id="vidparams">
@@ -324,20 +324,24 @@ function pickModel(name){ curModel=MODELS.find(m=>m.name===name)||null;
 let mode="points", src="video";
 function setMode(m){ mode=m; document.querySelectorAll('#modeseg button').forEach(b=>b.classList.toggle("on",b.dataset.mode===m)); }
 function setSrc(sv){ src=sv; document.querySelectorAll('#srcseg button').forEach(b=>b.classList.toggle("on",b.dataset.src===sv));
-  $("droptype").textContent=sv==="video"?"video":"photo(s)"; $("file").toggleAttribute("multiple",sv==="photos");
-  $("file").setAttribute("accept",sv==="video"?"video/*":"image/*"); $("vidparams").classList.toggle("hide",sv!=="video"); chosen=null; refreshGen(); }
+  $("vidparams").classList.toggle("hide",sv!=="video"); chosen=null; dropText(); refreshGen(); }
 document.querySelectorAll('#modeseg button').forEach(b=>b.onclick=()=>{ if(!b.disabled) setMode(b.dataset.mode); });
 document.querySelectorAll('#srcseg button').forEach(b=>b.onclick=()=>setSrc(b.dataset.src));
 
 // ---- file pick / drop ----
 let chosen=null;
 const drop=$("drop"), fileInput=$("file");
-drop.onclick=()=>fileInput.click();
+// Set the picker filter fresh on every open (a reused <input> otherwise keeps a
+// stale accept), and clear value so re-picking the same file still fires onchange.
+drop.onclick=()=>{ fileInput.value=""; fileInput.toggleAttribute("multiple",src==="photos");
+  fileInput.setAttribute("accept",src==="video"?"video/*":"image/*"); fileInput.click(); };
 fileInput.onchange=()=>{ chosen=fileInput.files; reflectChosen(); };
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("hl");}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("hl");}));
 drop.addEventListener("drop",e=>{ chosen=e.dataTransfer.files; reflectChosen(); });
-function reflectChosen(){ if(chosen&&chosen.length){ drop.textContent=chosen.length>1?`${chosen.length} files`:chosen[0].name; } refreshGen(); }
+function dropText(){ drop.textContent=(chosen&&chosen.length)?(chosen.length>1?`${chosen.length} files`:chosen[0].name)
+  :`click or drop a ${src==="video"?"video":"photo(s)"} here`; }
+function reflectChosen(){ dropText(); refreshGen(); }
 function refreshGen(){ $("gen").disabled=!(chosen&&chosen.length); }
 
 // ---- generate ----
