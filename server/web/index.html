@@ -233,18 +233,40 @@ function requestSort(view){ if(sorting||count===0) return; sorting=true;
 
 const _p=new URLSearchParams(location.search);
 let target=[0,0,0], yaw=+(_p.get("yaw")??0), pitch=+(_p.get("pitch")??0.05), dist=2.0, distLock=false;
-function frameToData(){ if(framed||count===0) return; let lo=[1e30,1e30,1e30],hi=[-1e30,-1e30,-1e30];
+let curMode="points", orbitLimit=null;   // orbitLimit set for gaussian (input-view) scenes
+function frameToData(){ if(framed||count===0) return;
+  if(curMode==="gaussians"){ frameInputView(); framed=true; sortDirty=true; return; }
+  let lo=[1e30,1e30,1e30],hi=[-1e30,-1e30,-1e30];
   for(let i=0;i<count;i++) for(let k=0;k<3;k++){ const v=positions[i*3+k]; if(v<lo[k])lo[k]=v; if(v>hi[k])hi[k]=v; }
   const diag=Math.hypot(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]);
   target=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2]; if(!distLock) dist=Math.max(0.5,0.7*diag);
-  framed=true; sortDirty=true; }
+  orbitLimit=null; framed=true; sortDirty=true; }
+// DA3 single-image gaussians are view-synthesis primitives: their depth is spread,
+// but they composite into the sharp INPUT view (the camera sits at the world origin).
+// So frame from the origin looking at the content's median, and clamp the orbit to
+// stay near that view instead of orbiting into the (expected) depth-spread floaters.
+function frameInputView(){
+  const step=Math.max(1,Math.floor(count/4000)); const xs=[],ys=[],zs=[];
+  for(let i=0;i<count;i+=step){ xs.push(positions[i*3]); ys.push(positions[i*3+1]); zs.push(positions[i*3+2]); }
+  const med=a=>{ a.sort((p,q)=>p-q); return a[a.length>>1]; };
+  const c=[med(xs),med(ys),med(zs)]; target=c;
+  const D=Math.hypot(c[0],c[1],c[2])||1; dist=D;              // eye lands exactly at the origin
+  const dir=[-c[0]/D,-c[1]/D,-c[2]/D];                        // target -> eye(origin)
+  pitch=Math.asin(Math.max(-1,Math.min(1,dir[1]))); yaw=Math.atan2(dir[0],dir[2]);
+  orbitLimit={yaw0:yaw,pitch0:pitch,d:0.3,dmin:D*0.5,dmax:D*1.25};
+}
 const keys={}; addEventListener("keydown",e=>keys[e.key.toLowerCase()]=true); addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
 let drag=false,lx=0,ly=0;
 canvas.addEventListener("pointerdown",e=>{drag=true;lx=e.clientX;ly=e.clientY;canvas.setPointerCapture(e.pointerId);});
 canvas.addEventListener("pointerup",()=>drag=false);
 canvas.addEventListener("pointermove",e=>{ if(!drag)return; yaw-=(e.clientX-lx)*0.005; pitch-=(e.clientY-ly)*0.005;
-  pitch=Math.max(-1.5,Math.min(1.5,pitch)); lx=e.clientX; ly=e.clientY; sortDirty=true; });
-canvas.addEventListener("wheel",e=>{ dist*=Math.exp(e.deltaY*0.001); dist=Math.max(0.05,Math.min(50,dist)); distLock=true; sortDirty=true; e.preventDefault(); },{passive:false});
+  pitch=Math.max(-1.5,Math.min(1.5,pitch));
+  if(orbitLimit){ const L=orbitLimit;
+    yaw=Math.max(L.yaw0-L.d,Math.min(L.yaw0+L.d,yaw)); pitch=Math.max(L.pitch0-L.d,Math.min(L.pitch0+L.d,pitch)); }
+  lx=e.clientX; ly=e.clientY; sortDirty=true; });
+canvas.addEventListener("wheel",e=>{ dist*=Math.exp(e.deltaY*0.001); dist=Math.max(0.05,Math.min(50,dist));
+  if(orbitLimit) dist=Math.max(orbitLimit.dmin,Math.min(orbitLimit.dmax,dist));
+  distLock=true; sortDirty=true; e.preventDefault(); },{passive:false});
 function perspective(f,a,n,fr){ const t=1/Math.tan(f/2); return new Float32Array([t/a,0,0,0,0,t,0,0,0,0,(fr+n)/(n-fr),-1,0,0,(2*fr*n)/(n-fr),0]); }
 const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
 const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
@@ -257,10 +279,12 @@ let frames=0,fpsT=performance.now();
 function render(){
   const speed=dist*0.02; const fwd=[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)];
   const right=norm(cross([0,1,0],fwd));
-  if(keys["w"]||keys["arrowup"]){for(let i=0;i<3;i++)target[i]-=fwd[i]*speed;sortDirty=true;}
-  if(keys["s"]||keys["arrowdown"]){for(let i=0;i<3;i++)target[i]+=fwd[i]*speed;sortDirty=true;}
-  if(keys["a"]||keys["arrowleft"]){for(let i=0;i<3;i++)target[i]-=right[i]*speed;sortDirty=true;}
-  if(keys["d"]||keys["arrowright"]){for(let i=0;i<3;i++)target[i]+=right[i]*speed;sortDirty=true;}
+  if(!orbitLimit){  // WASD panning would break the fixed input-view for gaussians
+    if(keys["w"]||keys["arrowup"]){for(let i=0;i<3;i++)target[i]-=fwd[i]*speed;sortDirty=true;}
+    if(keys["s"]||keys["arrowdown"]){for(let i=0;i<3;i++)target[i]+=fwd[i]*speed;sortDirty=true;}
+    if(keys["a"]||keys["arrowleft"]){for(let i=0;i<3;i++)target[i]-=right[i]*speed;sortDirty=true;}
+    if(keys["d"]||keys["arrowright"]){for(let i=0;i<3;i++)target[i]+=right[i]*speed;sortDirty=true;}
+  }
   const eye=[target[0]+dist*Math.sin(yaw)*Math.cos(pitch),target[1]+dist*Math.sin(pitch),target[2]+dist*Math.cos(yaw)*Math.cos(pitch)];
   const view=lookAt(eye,target); const aspect=canvas.width/canvas.height; const fovy=1.0;
   const proj=perspective(fovy,aspect,0.05,100); const fy=canvas.height/(2*Math.tan(fovy/2)),fx=fy;
@@ -394,6 +418,7 @@ async function loadScenes(){
 async function openScene(name){
   curScene=name; document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.name===name));
   const m=await (await fetch(`/scenes-assets/${name}/manifest.json`)).json();
+  curMode=m.mode||"points";
   steps=m.steps||[]; if(!steps.length) return;
   $("playrow").classList.remove("hide"); $("steprange").max=steps.length-1;
   stepI=steps.length-1; $("steprange").value=stepI; distLock=false;
