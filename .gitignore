@@ -6,6 +6,8 @@
 __pycache__/
 *.pyc
 .venv/
+# test-only reference-oracle python env (scripts/oracle.sh setup)
+/.oracle-venv/
 # Go build artifacts
 *.test
 *.out
@@ -17,3 +19,4 @@ __pycache__/
 /server/da3-server
 /.cache/
 /scripts/.fetch.log
+/server/server

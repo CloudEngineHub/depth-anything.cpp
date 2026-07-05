@@ -34,8 +34,8 @@
   .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
   .chip { font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: rgba(255,255,255,.07); color: #9aa3b1; }
   .chip.on { background: rgba(90,140,255,.22); color: #bcd0ff; }
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 84px; }
   .seg { display: flex; gap: 6px; margin-top: 6px; }
   .seg button { flex: 1; padding: 6px 0; font-size: 12px; border-radius: 8px; cursor: pointer;
     background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); color: #b8c0cc; }
@@ -61,6 +61,8 @@
   #status.err { color: #ff8a8a; }
   .play { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .play button { padding: 5px 10px; border-radius: 7px; cursor: pointer; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); color: #cdd3dc; }
+  .play button.on { background: rgba(90,140,255,.25); color: #cfe0ff; border-color: rgba(90,140,255,.45); }
+  .play button:disabled { opacity: .35; cursor: not-allowed; }
   #steprange { flex: 1; }
   .hide { display: none !important; }
   #hint { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
@@ -83,6 +85,7 @@
     <div id="gallery"></div>
     <div class="play hide" id="playrow">
       <button id="playbtn">▶</button>
+      <button id="flybtn" title="Flythrough: move the camera along the capture path as the slider reveals frames" disabled>🎥</button>
       <input type="range" id="steprange" min="0" max="0" value="0"/>
       <span id="stepnum" style="color:#8b93a1;font-size:11px">—</span>
     </div>
@@ -97,6 +100,7 @@
     <label class="fld">Output</label>
     <div class="seg" id="modeseg">
       <button data-mode="points" class="on">Point cloud</button>
+      <button data-mode="voxels">Voxels</button>
       <button data-mode="gaussians">Gaussians</button>
     </div>
 
@@ -110,9 +114,29 @@
 
     <div class="row" id="vidparams">
       <div><label class="fld">Max frames</label><input type="text" id="maxframes" value="60"/></div>
-      <div><label class="fld">Window</label><input type="text" id="chunk" value="12"/></div>
+      <div title="Frames solved together per cross-view pass. Bigger = fewer seams/less drift, but VRAM grows with view count — large windows on giant/nested can OOM. Effective max = Max frames.">
+        <label class="fld">Window</label><input type="text" id="chunk" value="12"/></div>
       <div><label class="fld">Overlap</label><input type="text" id="overlap" value="3"/></div>
       <div><label class="fld">Conf %</label><input type="text" id="confpct" value="55"/></div>
+      <div title="Depth-weighted density: 0 = uniform. Higher keeps more near-camera detail and thins far points (try 0.5–1.5).">
+        <label class="fld">Near bias</label><input type="text" id="nearbias" value="0"/></div>
+      <div title="Voxels mode only: grid cells across the scene. Lower = chunkier blocks (try 60–160).">
+        <label class="fld">Voxel res</label><input type="text" id="voxelres" value="100"/></div>
+    </div>
+
+    <div class="row" id="vidclean" style="gap:14px">
+      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none">
+        <input type="checkbox" id="icprefine"/> ICP seams (B)</label>
+      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none">
+        <input type="checkbox" id="loopclose"/> Loop closure (C)</label>
+      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none">
+        <input type="checkbox" id="fuse"/> Surface fusion (A)</label>
+      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
+             title="Absolute metric scale (metres). Requires the DA3 Nested — metric model.">
+        <input type="checkbox" id="metric"/> Metric (m)</label>
+      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
+             title="Render points as flat surface disks (oriented by estimated normals) instead of round blobs.">
+        <input type="checkbox" id="surfels" checked/> Surfels</label>
     </div>
 
     <button class="go" id="gen" disabled>Generate</button>
@@ -196,6 +220,45 @@ gl.uniform1i(gl.getUniformLocation(prog,"u_tex"),0);
 gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
 gl.blendFuncSeparate(gl.ONE,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
 
+// --- voxel-cube program (Minecraft mode) ---------------------------------------
+// Reuses the same u_tex splat records: A.xyz = cube centre (already GL-flipped by the
+// encoder), (A.w,B.x,B.y) = cube half-extent, B.z = packed rgba. One instance per cube
+// (gl_InstanceID indexes the texture), opaque + depth-tested, face-lit for a blocky look.
+const CVERT=`#version 300 es
+precision highp float; precision highp int;
+uniform highp usampler2D u_tex; uniform mat4 u_proj, u_view;
+in vec3 a_cpos; in vec3 a_cnrm; out vec3 v_rgb; out float v_shade;
+void main(){
+  uint t = uint(gl_InstanceID)*2u; ivec2 wh = textureSize(u_tex,0);
+  uvec4 A = texelFetch(u_tex, ivec2(int(t%uint(wh.x)), int(t/uint(wh.x))),0);
+  uvec4 B = texelFetch(u_tex, ivec2(int((t+1u)%uint(wh.x)), int((t+1u)/uint(wh.x))),0);
+  vec3 center = uintBitsToFloat(A.xyz);
+  vec3 hs = vec3(uintBitsToFloat(A.w), uintBitsToFloat(B.x), uintBitsToFloat(B.y));
+  uint rgba = B.z;
+  v_rgb = vec3(float(rgba&0xffu), float((rgba>>8)&0xffu), float((rgba>>16)&0xffu))/255.0;
+  vec3 world = center + a_cpos*(hs*2.0);
+  gl_Position = u_proj*u_view*vec4(world,1.0);
+  vec3 L = normalize(vec3(0.32,0.9,0.32));
+  v_shade = 0.40 + 0.60*max(dot(a_cnrm,L),0.0);
+}`;
+const CFRAG=`#version 300 es
+precision highp float; in vec3 v_rgb; in float v_shade; out vec4 o;
+void main(){ o = vec4(v_rgb*v_shade, 1.0); }`;
+const cubeProg = gl.createProgram();
+gl.attachShader(cubeProg, shader(gl.VERTEX_SHADER,CVERT)); gl.attachShader(cubeProg, shader(gl.FRAGMENT_SHADER,CFRAG));
+gl.linkProgram(cubeProg);
+if(!gl.getProgramParameter(cubeProg,gl.LINK_STATUS)){ setStatus(gl.getProgramInfoLog(cubeProg),true); throw new Error("cube link"); }
+gl.useProgram(cubeProg); gl.uniform1i(gl.getUniformLocation(cubeProg,"u_tex"),0);
+const cubeU = { proj:gl.getUniformLocation(cubeProg,"u_proj"), view:gl.getUniformLocation(cubeProg,"u_view") };
+const aCpos = gl.getAttribLocation(cubeProg,"a_cpos"), aCnrm = gl.getAttribLocation(cubeProg,"a_cnrm");
+// 36 verts (6 faces × 2 tris), each = pos(±0.5) + outward normal. No culling, so winding is irrelevant.
+const cubeGeom = (()=>{ const V=[[-.5,-.5,-.5],[.5,-.5,-.5],[.5,.5,-.5],[-.5,.5,-.5],[-.5,-.5,.5],[.5,-.5,.5],[.5,.5,.5],[-.5,.5,.5]];
+  const F=[{n:[0,0,-1],i:[0,1,2,0,2,3]},{n:[0,0,1],i:[4,6,5,4,7,6]},{n:[-1,0,0],i:[0,3,7,0,7,4]},
+           {n:[1,0,0],i:[1,5,6,1,6,2]},{n:[0,-1,0],i:[0,4,5,0,5,1]},{n:[0,1,0],i:[3,2,6,3,6,7]}];
+  const a=[]; for(const f of F) for(const k of f.i){ a.push(V[k][0],V[k][1],V[k][2], f.n[0],f.n[1],f.n[2]); } return new Float32Array(a); })();
+const cubeBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,cubeBuf); gl.bufferData(gl.ARRAY_BUFFER,cubeGeom,gl.STATIC_DRAW);
+gl.useProgram(prog);
+
 let count=0, positions=new Float32Array(0), texData=new Uint32Array(0), framed=false;
 function resetStore(){ count=0; positions=new Float32Array(0); texData=new Uint32Array(0); framed=false;
   sortedCount=0; $("s-splats").textContent="0"; }
@@ -228,20 +291,43 @@ onmessage=(e)=>{ if(e.data.pos){pos=e.data.pos;n=e.data.n;return;} if(!pos)retur
 let sortedIndex=new Uint32Array(0), sortedCount=0, sorting=false, sortDirty=true;
 worker.onmessage=(e)=>{ sortedIndex=e.data.order; sortedCount=e.data.n; sorting=false;
   gl.bindBuffer(gl.ARRAY_BUFFER,idxBuf); gl.bufferData(gl.ARRAY_BUFFER,sortedIndex,gl.DYNAMIC_DRAW); };
-function requestSort(view){ if(sorting||count===0) return; sorting=true;
-  worker.postMessage({pos:positions.slice(0,count*3),n:count}); worker.postMessage({view,n:count}); }
+function requestSort(view,nRev){ const m=Math.max(0,Math.min(count,nRev|0));
+  if(m===0){ sortedCount=0; return; }
+  if(sorting) return; sorting=true;
+  worker.postMessage({pos:positions.slice(0,m*3),n:m}); worker.postMessage({view,n:m}); }
 
 const _p=new URLSearchParams(location.search);
 let target=[0,0,0], yaw=+(_p.get("yaw")??0), pitch=+(_p.get("pitch")??0.05), dist=2.0, distLock=false;
 let curMode="points", orbitLimit=null;   // orbitLimit set for gaussian (input-view) scenes
 let gsCam=null;   // {fx,fy,cx,cy,w,h} input camera for gaussian scenes (pose = identity)
+let sceneDiag=2;  // world-space bbox diagonal of the current cloud (for fly speed/clip planes)
+// Flythrough: framePos/frameFwd are per-input-frame camera poses (GL axes, 3F each) from
+// the manifest. flyU is the smoothed fractional frame index the camera sits at; it chases
+// the frame revealed by the current build-up step, so scrubbing/playing flies the path.
+let flythrough=false, framePos=null, frameFwd=null, flyU=0, flyInit=false;
+// Incremental reveal: the whole cloud is ONE file, ordered frame-major then high-
+// confidence(small-radius)-first within each frame. `reveal` is how many primitives are
+// currently drawn; it eases toward `revealTarget` (set by the build-up step), so points
+// fade in solid-surface-first with no reloading. curSplatURL dedups the single file.
+let revealTarget=0, reveal=0, curSplatURL="";
 function frameToData(){ if(framed||count===0) return;
   if(curMode==="gaussians"){ frameInputView(); framed=true; sortDirty=true; return; }
   let lo=[1e30,1e30,1e30],hi=[-1e30,-1e30,-1e30];
   for(let i=0;i<count;i++) for(let k=0;k<3;k++){ const v=positions[i*3+k]; if(v<lo[k])lo[k]=v; if(v>hi[k])hi[k]=v; }
   const diag=Math.hypot(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]);
+  sceneDiag=diag>1e-4?diag:2;
   target=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2]; if(!distLock) dist=Math.max(0.5,0.7*diag);
   orbitLimit=null; framed=true; sortDirty=true; }
+// Number of input frames we have poses for, and the frame the current step reveals up to.
+function nFrames(){ return framePos?framePos.length/3:0; }
+function stepFrame(){ const F=nFrames(); if(F<1||!steps[stepI]) return 0; return Math.max(0,Math.min(F-1,(steps[stepI].n|0)-1)); }
+// Sample the capture path (pos + forward) at a fractional frame index u (lerp).
+function pathAt(u){ const F=nFrames(); u=Math.max(0,Math.min(F-1,u));
+  const a=Math.floor(u), b=Math.min(F-1,a+1), t=u-a;
+  const p=[0,0,0],f=[0,0,0];
+  for(let k=0;k<3;k++){ p[k]=framePos[3*a+k]*(1-t)+framePos[3*b+k]*t; f[k]=frameFwd[3*a+k]*(1-t)+frameFwd[3*b+k]*t; }
+  return {p,f:norm(f)};
+}
 // DA3 single-image gaussians are view-synthesis primitives: their per-pixel depth
 // is deliberately spread, but they composite into the sharp INPUT view. The pose is
 // canonical (identity), so the input camera sits at the world origin looking down +z
@@ -274,16 +360,36 @@ function resize(){ const dpr=Math.min(devicePixelRatio,2); canvas.width=innerWid
 addEventListener("resize",resize); resize();
 let frames=0,fpsT=performance.now();
 function render(){
-  const speed=dist*0.02; const fwd=[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)];
-  const right=norm(cross([0,1,0],fwd));
-  if(!orbitLimit){  // WASD panning would break the fixed input-view for gaussians
-    if(keys["w"]||keys["arrowup"]){for(let i=0;i<3;i++)target[i]-=fwd[i]*speed;sortDirty=true;}
-    if(keys["s"]||keys["arrowdown"]){for(let i=0;i<3;i++)target[i]+=fwd[i]*speed;sortDirty=true;}
-    if(keys["a"]||keys["arrowleft"]){for(let i=0;i<3;i++)target[i]-=right[i]*speed;sortDirty=true;}
-    if(keys["d"]||keys["arrowright"]){for(let i=0;i<3;i++)target[i]+=right[i]*speed;sortDirty=true;}
+  // Ease the confidence-ordered reveal toward the current step's target (gradual fade-in).
+  if(Math.abs(revealTarget-reveal)>0.5){ reveal+=(revealTarget-reveal)*0.09;
+    if(Math.abs(revealTarget-reveal)<=0.5) reveal=revealTarget; sortDirty=true; }
+  const revInt=Math.max(0,Math.min(count,Math.round(reveal)));
+  const flyActive = flythrough && framePos && curMode!=="gaussians";
+  let eye, view;
+  if(flyActive){
+    // Glide the camera along the capture path: chase the frame the current step reveals,
+    // smoothing the fractional index so multi-frame jumps and playback flow continuously.
+    if(!flyInit){ flyU=stepFrame(); flyInit=true; }
+    flyU += (stepFrame()-flyU)*0.06;
+    const c=pathAt(flyU);
+    const pull=0.10*sceneDiag;                 // sit just behind the capture point for context
+    eye=[c.p[0]-c.f[0]*pull, c.p[1]-c.f[1]*pull, c.p[2]-c.f[2]*pull];
+    const look=[c.p[0]+c.f[0]*sceneDiag, c.p[1]+c.f[1]*sceneDiag, c.p[2]+c.f[2]*sceneDiag];
+    view=lookAt(eye,look);
+    sortDirty=true;                            // camera moves every frame -> keep splats sorted
+  }else{
+    const speed=dist*0.02; const fwd=[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)];
+    const right=norm(cross([0,1,0],fwd));
+    if(!orbitLimit){  // WASD panning would break the fixed input-view for gaussians
+      if(keys["w"]||keys["arrowup"]){for(let i=0;i<3;i++)target[i]-=fwd[i]*speed;sortDirty=true;}
+      if(keys["s"]||keys["arrowdown"]){for(let i=0;i<3;i++)target[i]+=fwd[i]*speed;sortDirty=true;}
+      if(keys["a"]||keys["arrowleft"]){for(let i=0;i<3;i++)target[i]-=right[i]*speed;sortDirty=true;}
+      if(keys["d"]||keys["arrowright"]){for(let i=0;i<3;i++)target[i]+=right[i]*speed;sortDirty=true;}
+    }
+    eye=[target[0]+dist*Math.sin(yaw)*Math.cos(pitch),target[1]+dist*Math.sin(pitch),target[2]+dist*Math.cos(yaw)*Math.cos(pitch)];
+    view=lookAt(eye,target);
   }
-  const eye=[target[0]+dist*Math.sin(yaw)*Math.cos(pitch),target[1]+dist*Math.sin(pitch),target[2]+dist*Math.cos(yaw)*Math.cos(pitch)];
-  const view=lookAt(eye,target); const cw=canvas.width,ch=canvas.height; const aspect=cw/ch;
+  const cw=canvas.width,ch=canvas.height; const aspect=cw/ch;
   let proj,fx,fy;
   if(gsCam && curMode==="gaussians"){
     // Render through the input camera's (anamorphic) intrinsics, fitting the WxH
@@ -293,16 +399,31 @@ function render(){
     const n=0.05,f=500; proj=new Float32Array([p00,0,0,0, 0,p11,0,0, 0,0,(f+n)/(n-f),-1, 0,0,(2*f*n)/(n-f),0]);
     fx=p00*cw/2; fy=p11*ch/2;
   }else{
-    const fovy=1.0; proj=perspective(fovy,aspect,0.05,100); fy=ch/(2*Math.tan(fovy/2)); fx=fy;
+    const fovy=1.0; proj=perspective(fovy,aspect,Math.max(0.01,0.004*sceneDiag),Math.max(100,20*sceneDiag)); fy=ch/(2*Math.tan(fovy/2)); fx=fy;
   }
-  if(sortDirty){ requestSort(view); sortDirty=false; }
-  gl.clearColor(0.043,0.051,0.063,1); gl.clear(gl.COLOR_BUFFER_BIT); gl.useProgram(prog);
-  gl.uniformMatrix4fv(U.view,false,view); gl.uniformMatrix4fv(U.proj,false,proj);
-  gl.uniform2f(U.focal,fx,fy); gl.uniform2f(U.viewport,canvas.width,canvas.height);
-  gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf); gl.enableVertexAttribArray(aCorner); gl.vertexAttribPointer(aCorner,2,gl.FLOAT,false,0,0);
-  if(sortedCount>0){ gl.bindBuffer(gl.ARRAY_BUFFER,idxBuf); gl.enableVertexAttribArray(aIndex);
-    gl.vertexAttribIPointer(aIndex,1,gl.UNSIGNED_INT,0,0); gl.vertexAttribDivisor(aIndex,1);
-    gl.drawArraysInstanced(gl.TRIANGLES,0,6,sortedCount); }
+  gl.clearColor(0.043,0.051,0.063,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  if(curMode==="voxels"){
+    // Opaque, depth-tested cubes — no back-to-front sort needed.
+    gl.enable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.useProgram(cubeProg);
+    gl.uniformMatrix4fv(cubeU.view,false,view); gl.uniformMatrix4fv(cubeU.proj,false,proj);
+    if(aCorner>=0) gl.disableVertexAttribArray(aCorner);
+    if(aIndex>=0) gl.disableVertexAttribArray(aIndex);
+    gl.bindBuffer(gl.ARRAY_BUFFER,cubeBuf);
+    gl.enableVertexAttribArray(aCpos); gl.vertexAttribPointer(aCpos,3,gl.FLOAT,false,24,0); gl.vertexAttribDivisor(aCpos,0);
+    gl.enableVertexAttribArray(aCnrm); gl.vertexAttribPointer(aCnrm,3,gl.FLOAT,false,24,12); gl.vertexAttribDivisor(aCnrm,0);
+    if(revInt>0) gl.drawArraysInstanced(gl.TRIANGLES,0,36,revInt);
+  }else{
+    if(sortDirty){ requestSort(view,revInt); sortDirty=false; }
+    gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.useProgram(prog);
+    gl.uniformMatrix4fv(U.view,false,view); gl.uniformMatrix4fv(U.proj,false,proj);
+    gl.uniform2f(U.focal,fx,fy); gl.uniform2f(U.viewport,canvas.width,canvas.height);
+    if(aCpos>=0) gl.disableVertexAttribArray(aCpos);
+    if(aCnrm>=0) gl.disableVertexAttribArray(aCnrm);
+    gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf); gl.enableVertexAttribArray(aCorner); gl.vertexAttribPointer(aCorner,2,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(aCorner,0);
+    if(sortedCount>0){ gl.bindBuffer(gl.ARRAY_BUFFER,idxBuf); gl.enableVertexAttribArray(aIndex);
+      gl.vertexAttribIPointer(aIndex,1,gl.UNSIGNED_INT,0,0); gl.vertexAttribDivisor(aIndex,1);
+      gl.drawArraysInstanced(gl.TRIANGLES,0,6,sortedCount); }
+  }
   frames++; const now=performance.now(); if(now-fpsT>500){ $("s-fps").textContent=Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now; }
   requestAnimationFrame(render);
 }
@@ -322,8 +443,9 @@ async function loadSplat(url,{reframe=true}={}){
       if(received-lastIngest>512*ROW||!total){ const all=new Uint8Array(received); let o=0; for(const c of chunks){all.set(c,o);o+=c.byteLength;} ingestBytes(all); sortDirty=true; lastIngest=received; } }
     if(my!==loadToken) return;
     const all=new Uint8Array(received); let o=0; for(const c of chunks){all.set(c,o);o+=c.byteLength;} ingestBytes(all); sortDirty=true;
+    if(!framed) frameToData();   // ensure small clouds (e.g. coarse voxels) get framed
     $("bar").firstElementChild.style.width="100%"; $("s-loaded").textContent="100%";
-    setStatus(`ready · ${count.toLocaleString()} splats`);
+    setStatus(`ready · ${count.toLocaleString()} ${curMode==="voxels"?"cubes":"splats"}`);
   }catch(err){ setStatus(err.message,true); console.error(err); }
 }
 
@@ -349,7 +471,10 @@ function pickModel(name){ curModel=MODELS.find(m=>m.name===name)||null;
     add(curModel.backbone,true); add("points",curModel.pose); if(curModel.gaussians) add("gaussians",true); if(curModel.metric) add("metric",true); }
   const gBtn=document.querySelector('#modeseg button[data-mode="gaussians"]');
   gBtn.disabled=!(curModel&&curModel.gaussians);
-  if(gBtn.disabled&&gBtn.classList.contains("on")) setMode("points");
+  const vBtn=document.querySelector('#modeseg button[data-mode="voxels"]');
+  vBtn.disabled=!(curModel&&curModel.pose);   // voxels need pose (same as points)
+  const cur=document.querySelector('#modeseg button.on');
+  if(cur&&cur.disabled) setMode("points");
 }
 // ---- mode / source segmented ----
 let mode="points", src="video";
@@ -385,6 +510,13 @@ $("gen").onclick=async()=>{
       fd.append("model",curModel.name); fd.append("mode",mode);
       fd.append("max_frames",$("maxframes").value); fd.append("conf_pct",$("confpct").value);
       fd.append("chunk_size",$("chunk").value); fd.append("overlap",$("overlap").value);
+      fd.append("icp_refine",$("icprefine").checked?"1":"0");
+      fd.append("loop_close",$("loopclose").checked?"1":"0");
+      fd.append("fuse",$("fuse").checked?"1":"0");
+      fd.append("metric",$("metric").checked?"1":"0");
+      fd.append("near_bias",$("nearbias").value);
+      fd.append("surfels",$("surfels").checked?"1":"0");
+      fd.append("voxel_res",$("voxelres").value);
       setStatus("uploading video…");
       const r=await (await fetch("/api/scene/from-video",{method:"POST",body:fd})).json();
       if(r.error){ throw new Error(r.error); }
@@ -414,7 +546,7 @@ async function pollScene(job){
 }
 
 // ---- scenes gallery + build-up playback ----
-let SCENES=[], curScene=null, steps=[], stepI=0, playTimer=null;
+let SCENES=[], curScene=null, steps=[], stepI=0, playTimer=null, curBust=0;
 async function loadScenes(){
   const r=await (await fetch("/api/scenes")).json(); SCENES=r.scenes||[];
   const g=$("gallery"); g.innerHTML="";
@@ -424,22 +556,47 @@ async function loadScenes(){
     card.onclick=()=>openScene(sc.name); g.appendChild(card); }
 }
 async function openScene(name){
-  curScene=name; document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.name===name));
-  const m=await (await fetch(`/scenes-assets/${name}/manifest.json`)).json();
+  curScene=name; curBust=Date.now();   // per-open cache-bust: a re-baked scene reuses
+  curSplatURL="";                       // force the single cloud file to (re)load for this scene
+  document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.name===name));
+  const m=await (await fetch(`/scenes-assets/${name}/manifest.json?v=${curBust}`)).json();
   curMode=m.mode||"points"; gsCam=m.cam||null;
+  // Per-frame capture poses enable the flythrough; a scene baked before this feature (or
+  // a gaussian scene) has none, so the camera button is disabled and we stay in orbit.
+  framePos=m.frame_pos||null; frameFwd=m.frame_fwd||null; flyInit=false;
+  const canFly = !!(framePos && frameFwd && curMode!=="gaussians");
+  flythrough = flythrough && canFly;
+  $("flybtn").disabled=!canFly; $("flybtn").classList.toggle("on",flythrough);
   steps=m.steps||[]; if(!steps.length) return;
   $("playrow").classList.remove("hide"); $("steprange").max=steps.length-1;
+  // Open on the FINAL, full cloud — don't auto-replay the build-up from step 0 (that
+  // read as "the scene reset to sparse and rebuilt"). Press ▶ to watch the build-up.
   stepI=steps.length-1; $("steprange").value=stepI; distLock=false;
   await showStep(stepI,true);
-  if(steps.length>1) playFrom(0);
 }
 async function showStep(i,reframe){ stepI=i; $("steprange").value=i; const st=steps[i];
   $("stepnum").textContent=`${st.n}${st.label?" · "+st.label:""}`;
-  await loadSplat(`/scenes-assets/${curScene}/${st.splat}`,{reframe});
+  const url=`/scenes-assets/${curScene}/${st.splat}?v=${curBust}`;
+  if(url!==curSplatURL){
+    // New scenes share ONE cloud file across all steps -> load once, then only the reveal
+    // moves. Legacy scenes have a file per step -> this still loads each, revealing all.
+    curSplatURL=url; await loadSplat(url,{reframe});
+    revealTarget = (st.npts!=null&&st.npts>0) ? Math.min(st.npts,count) : count;
+    reveal = revealTarget;                                   // snap on (re)load
+  } else {
+    revealTarget = (st.npts!=null&&st.npts>0) ? Math.min(st.npts,count) : count;  // same file: ease the reveal
+  }
 }
 $("steprange").oninput=()=>{ stopPlay(); showStep(+$("steprange").value,false); };
 $("playbtn").onclick=()=>{ if(playTimer) stopPlay(); else playFrom(stepI>=steps.length-1?0:stepI); };
+$("flybtn").onclick=()=>{ if($("flybtn").disabled) return;
+  flythrough=!flythrough; $("flybtn").classList.toggle("on",flythrough); sortDirty=true;
+  if(flythrough){ flyInit=false; }                 // snap the camera onto the path
+  else { framed=false; distLock=false; frameToData(); }  // restore a framed orbit view
+};
 function playFrom(i){ stopPlay(); $("playbtn").textContent="⏸"; let k=i; distLock=(k>0);
+  // Start the reveal from this step so the build-up grows forward (not eases down from full).
+  if(steps[i]&&steps[i].npts!=null) reveal=Math.min(steps[i].npts,count);
   const tick=async()=>{ await showStep(k, k===0); k++; if(k>=steps.length){ stopPlay(); return; } playTimer=setTimeout(tick,1300); };
   tick();
 }

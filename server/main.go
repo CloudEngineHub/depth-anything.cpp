@@ -58,7 +58,7 @@ func main() {
 	workDir := flag.String("work-dir", "/tmp/da3-demo", "scratch dir for uploads/frames")
 	threads := flag.Int("threads", 12, "inference threads")
 	maxLive := flag.Int("max-live", 1, "max resident model contexts (LRU evicted)")
-	maxSplats := flag.Int("max-splats", 1500000, "cap splats per output")
+	maxSplats := flag.Int("max-splats", 3500000, "cap splats per output")
 	flag.Parse()
 
 	api, err := openCAPI(*lib)
@@ -99,10 +99,25 @@ func main() {
 	mux.HandleFunc("/api/scenes", s.handleScenes)
 	mux.HandleFunc("/api/scene/from-video", s.handleSceneFromVideo)
 	mux.HandleFunc("/api/scene/status/", s.handleSceneStatus)
-	mux.Handle("/scenes-assets/", http.StripPrefix("/scenes-assets/", http.FileServer(http.Dir(*scenesDir))))
+	// Scenes are regenerated in place under a stable name/URL, so the browser must
+	// revalidate rather than serve a stale manifest/splat from cache (a re-baked clip
+	// would otherwise still show the old point count). no-cache => conditional GET;
+	// FileServer answers 304 for unchanged splats and 200 with fresh bytes when the
+	// file's mtime moved.
+	sceneFS := http.StripPrefix("/scenes-assets/", http.FileServer(http.Dir(*scenesDir)))
+	mux.Handle("/scenes-assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		sceneFS.ServeHTTP(w, r)
+	}))
 
 	sub, _ := fs.Sub(webFS, "web")
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	// The single-page app carries all its JS/CSS inline; serve it no-cache so a rebuilt
+	// binary's UI shows up on a normal reload instead of the browser pinning stale code.
+	appFS := http.FileServer(http.FS(sub))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		appFS.ServeHTTP(w, r)
+	}))
 
 	log.Printf("da3 demo on http://localhost%s  (scenes=%s)", *addr, *scenesDir)
 	log.Fatal(http.ListenAndServe(*addr, mux))

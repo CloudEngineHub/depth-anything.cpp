@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ type manifestStep struct {
 	Splat  string   `json:"splat"`
 	Images []string `json:"images"`
 	N      int      `json:"n"`
+	NPts   int      `json:"npts,omitempty"` // primitives revealed at this step (viewer reveals a prefix of one file)
 	Label  string   `json:"label,omitempty"`
 }
 
@@ -42,6 +44,9 @@ type sceneManifest struct {
 	Mode  string         `json:"mode"`
 	Steps []manifestStep `json:"steps"`
 	Cam   *Cam           `json:"cam,omitempty"`
+	// Per-input-frame capture poses (GL axes, y-up), for the viewer flythrough. 3F each.
+	FramePos []float32 `json:"frame_pos,omitempty"`
+	FrameFwd []float32 `json:"frame_fwd,omitempty"`
 }
 
 type sceneInfo struct {
@@ -169,9 +174,10 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 	if chunkSize < 2 {
 		chunkSize = 2
 	}
-	if chunkSize > 24 {
-		chunkSize = 24
-	}
+	// Window is uncapped (was clamped to 24). The whole window goes through one cross-view
+	// attention pass, so large windows on giant/nested can exhaust VRAM and hard-crash the
+	// Vulkan backend — that's on the operator now. Note the C core also clamps the window to
+	// the frame count, so the effective max is maxFrames.
 	overlap := atoiDefault(r.FormValue("overlap"), 3)
 	if overlap < 0 {
 		overlap = 0
@@ -179,8 +185,10 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 	if overlap > chunkSize-1 {
 		overlap = chunkSize - 1
 	}
-	fps := atofDefault(r.FormValue("fps"), 6)
-	if fps < 0.5 {
+	// fps<=0 (the default) => auto: bakeVideo picks an fps so the whole clip yields
+	// ~maxFrames frames. An explicit value overrides (clamped to a sane range).
+	fps := atofDefault(r.FormValue("fps"), 0)
+	if fps > 0 && fps < 0.5 {
 		fps = 0.5
 	}
 	if fps > 30 {
@@ -188,6 +196,15 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 	}
 	confPct := atofDefault(r.FormValue("conf_pct"), 55)
 	ptSize := float32(atofDefault(r.FormValue("point_size"), 1.2))
+	// De-ghosting toggles (checkboxes): B=per-seam ICP, C=loop closure, A=fusion.
+	icpRefine := boolForm(r.FormValue("icp_refine"))
+	loopClose := boolForm(r.FormValue("loop_close"))
+	fuse := boolForm(r.FormValue("fuse"))
+	metric := boolForm(r.FormValue("metric")) // absolute-metres output (nested model only)
+	fuseVoxel := atofDefault(r.FormValue("fuse_voxel"), 0) // 0 => C-side default (0.03 m)
+	nearBias := atofDefault(r.FormValue("near_bias"), 0)   // 0 => uniform; >0 keeps more near, fewer far
+	surfels := boolForm(r.FormValue("surfels"))            // orient points as flat surface disks
+	voxelRes := atofDefault(r.FormValue("voxel_res"), 100) // cells across the bbox diagonal (mode=voxels)
 
 	// save upload
 	jobDir := filepath.Join(s.workDir, "uploads", name)
@@ -212,7 +229,8 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		s.bakeSem <- struct{}{}
 		defer func() { <-s.bakeSem }()
-		err := s.bakeVideo(name, vpath, jobDir, model, mode, maxFrames, chunkSize, overlap, fps, confPct, ptSize)
+		err := s.bakeVideo(name, vpath, jobDir, model, mode, maxFrames, chunkSize, overlap, fps, confPct, ptSize,
+			icpRefine, loopClose, fuse, metric, fuseVoxel, nearBias, surfels, voxelRes)
 		s.jobsMu.Lock()
 		j := s.jobs[name]
 		if err != nil {
@@ -227,10 +245,26 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 }
 
 // bakeVideo: ffmpeg -> frames -> DA3 -> acc_*.splat + thumbnails + manifest.
-func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, chunkSize, overlap int, fps, confPct float64, ptSize float32) error {
+func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, chunkSize, overlap int, fps, confPct float64, ptSize float32,
+	icpRefine, loopClose, fuse, metric bool, fuseVoxel, nearBias float64, surfels bool, voxelRes float64) error {
 	framesDir := filepath.Join(jobDir, "frames")
 	_ = os.RemoveAll(framesDir)
 	_ = os.MkdirAll(framesDir, 0o755)
+	// Auto fps: pick a rate so the WHOLE clip yields ~maxFrames frames. A fixed low
+	// fps starves short clips (a 0.5s clip at 6fps gives 3 frames -> sparse cloud),
+	// so when no explicit fps is set, derive it from the probed duration.
+	if fps <= 0 {
+		fps = 6 // fallback if the probe fails
+		if dur := probeDurationSec(vpath); dur > 0.05 {
+			fps = float64(maxFrames) / dur
+			if fps < 1 {
+				fps = 1
+			}
+			if fps > 30 {
+				fps = 30
+			}
+		}
+	}
 	// Bounded extraction (fps cap + downscale), then even stride to maxFrames.
 	cmd := exec.Command("ffmpeg", "-y", "-loglevel", "error", "-i", vpath,
 		"-vf", fmt.Sprintf("fps=%g,scale=640:-2", fps), filepath.Join(framesDir, "all%05d.jpg"))
@@ -314,7 +348,10 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 	var cloud *Cloud
 	err := s.infer(func() error {
 		return s.reg.WithModel(model, func(ctx uintptr, _ *ModelInfo) error {
-			c, e := s.api.PointsStream(ctx, sel, chunkSize, overlap, confPct, ptSize, s.maxSplats)
+			// Metric output only makes sense for a nested (metric-capable) model; the
+			// C side would reject metric on a plain pose model, so gate it here.
+			c, e := s.api.PointsStream(ctx, sel, chunkSize, overlap, confPct, ptSize, s.maxSplats,
+				icpRefine, loopClose, fuse, metric && mi.Metric, fuseVoxel)
 			if e != nil {
 				return e
 			}
@@ -327,12 +364,63 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 	}
 	s.setJob(name, func(j *sceneJob) { j.Done = len(sel); j.Kept = len(sel) })
 
-	// Build-up: acc_k.splat = points from the first k views (frames outer). For long
-	// clips, stride the steps so the viewer gets ~30 progressive reveals (always
-	// including the final full cloud), not one file per frame.
+	// Depth-weighted density: keep more near-camera points, fewer far ones. Applied
+	// once here so the build-up below (which slices Counts prefixes) sees the thinned
+	// cloud with rebuilt per-view counts. nearBias<=0 leaves the cloud untouched.
+	if nearBias > 0 {
+		before := cloud.N
+		cloud = thinByDepth(cloud, nearBias)
+		log.Printf("scene %s: near-bias %.2f thinned %d -> %d points", name, nearBias, before, cloud.N)
+	}
+
+	// Voxel (Minecraft) mode snaps points onto a grid whose cell = bbox-diagonal /
+	// voxelRes; each build-up step voxelises its prefix at that fixed cell so blocks
+	// stay put as the scene fills in. Surfels (oriented disks) only apply to the smooth
+	// point/metric output — pointless under voxelisation, so we skip the normal pass.
+	asVoxels := mode == "voxels"
+	var cell float64
+	if asVoxels {
+		if voxelRes < 1 {
+			voxelRes = 100
+		}
+		cell = cloudBBoxDiag(cloud, cloud.N) / voxelRes
+		log.Printf("scene %s: voxel mode res=%.0f cell=%.5g", name, voxelRes, cell)
+	} else {
+		// Additive reveal: overlapping frames re-observe the same surface, so revealing a
+		// new frame otherwise re-blends already-shown regions. Collapse coincident points
+		// (first frame to fill a ~point-spacing cell wins) so each surface patch is owned by
+		// one frame. Cell = median point radius (≈ local sample spacing), scene-relative.
+		if medRad := float64(pctile(cloud.Rad, 50)); medRad > 0 {
+			dropped := dedupFirstFrame(cloud, medRad)
+			log.Printf("scene %s: overlap dedup cell=%.5g dropped %d -> %d pts", name, medRad, dropped, cloud.N)
+		}
+		if surfels {
+			estimateNormals(cloud)
+		}
+	}
+
+	// Build-up: emit ONE full primitive file, ordered so the viewer can reveal a growing
+	// PREFIX of it (no reloading). Points are ordered frame-major then high-confidence
+	// (small-radius) first within each frame; cubes are ordered by first-touching frame.
+	// Each step then just carries how many primitives are revealed at that point (NPts).
+	if !asVoxels {
+		orderWithinFramesByRadius(cloud)
+	}
+	var fullBlob []byte
+	var cubeFirst []int // per-cube first frame (voxels), for the reveal boundary
+	if asVoxels {
+		fullBlob, cubeFirst = cloudToCubesOrdered(cloud, cell)
+	} else {
+		fullBlob = pointsToSplat(cloud, cloud.N, 1.0)
+	}
+	const fullName = "acc_full.splat"
+	if e := os.WriteFile(filepath.Join(sceneDir, fullName), fullBlob, 0o644); e != nil {
+		return e
+	}
+	totalPrims := len(fullBlob) / splatRow
+
 	steps := []manifestStep{}
 	prefix := 0
-	capN := s.maxSplats
 	nv := cloud.N0(len(sel))
 	bstep := (nv + 29) / 30
 	if bstep < 1 {
@@ -346,21 +434,75 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 		if k%bstep != 0 && k != nv {
 			continue
 		}
-		n := prefix
-		if capN > 0 && n > capN {
-			n = capN
+		npts := prefix // points revealed = cumulative through frame k
+		if asVoxels {
+			npts = countLess(cubeFirst, k) // cubes whose first frame < k
 		}
-		fn := fmt.Sprintf("acc_%d.splat", k)
-		if e := os.WriteFile(filepath.Join(sceneDir, fn), pointsToSplat(cloud, n, 1.0), 0o644); e != nil {
-			return e
+		if npts > totalPrims {
+			npts = totalPrims
 		}
 		label := ""
 		if k == nv {
-			label = fmt.Sprintf("full %d-view cloud · %d pts", k, prefix)
+			npts = totalPrims
+			if asVoxels {
+				label = fmt.Sprintf("full %d-view voxels · %d cubes", k, totalPrims)
+			} else {
+				label = fmt.Sprintf("full %d-view cloud · %d pts", k, totalPrims)
+			}
 		}
-		steps = append(steps, manifestStep{Splat: fn, Images: thumbs[:k], N: k, Label: label})
+		steps = append(steps, manifestStep{Splat: fullName, Images: thumbs[:k], N: k, NPts: npts, Label: label})
 	}
-	return writeManifest(sceneDir, sceneManifest{Model: model, Mode: mode, Steps: steps})
+
+	// Per-frame capture poses for the viewer flythrough: flip OpenCV(y-down,z-fwd) ->
+	// GL(y-up) to match the rendered cloud (the splat encoder applies the same flip to
+	// point positions). Failed-window frames come back as zero; forward/back-fill them
+	// from the nearest valid pose so the camera path stays continuous.
+	fpos, ffwd := frameGLPoses(cloud, len(sel))
+	return writeManifest(sceneDir, sceneManifest{Model: model, Mode: mode, Steps: steps,
+		FramePos: fpos, FrameFwd: ffwd})
+}
+
+// frameGLPoses returns per-frame camera centre + forward in GL axes (length 3F each),
+// or (nil,nil) if the cloud carries no poses. Zero (failed) frames are gap-filled.
+func frameGLPoses(c *Cloud, nSel int) (pos, fwd []float32) {
+	if len(c.FramePos) != 3*nSel || len(c.FrameFwd) != 3*nSel || nSel == 0 {
+		return nil, nil
+	}
+	pos = make([]float32, 3*nSel)
+	fwd = make([]float32, 3*nSel)
+	valid := make([]bool, nSel)
+	for i := 0; i < nSel; i++ {
+		pos[3*i], pos[3*i+1], pos[3*i+2] = c.FramePos[3*i], -c.FramePos[3*i+1], -c.FramePos[3*i+2]
+		fwd[3*i], fwd[3*i+1], fwd[3*i+2] = c.FrameFwd[3*i], -c.FrameFwd[3*i+1], -c.FrameFwd[3*i+2]
+		fx, fy, fz := fwd[3*i], fwd[3*i+1], fwd[3*i+2]
+		valid[i] = fx*fx+fy*fy+fz*fz > 0.25 // a real unit forward (failed frames are ~0)
+	}
+	copyPose := func(dst, src int) {
+		pos[3*dst], pos[3*dst+1], pos[3*dst+2] = pos[3*src], pos[3*src+1], pos[3*src+2]
+		fwd[3*dst], fwd[3*dst+1], fwd[3*dst+2] = fwd[3*src], fwd[3*src+1], fwd[3*src+2]
+	}
+	first := -1
+	for i := 0; i < nSel; i++ {
+		if valid[i] {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return nil, nil // no usable poses (all windows failed)
+	}
+	last := first
+	for i := first + 1; i < nSel; i++ { // forward-fill interior/trailing gaps
+		if valid[i] {
+			last = i
+		} else {
+			copyPose(i, last)
+		}
+	}
+	for i := 0; i < first; i++ { // back-fill the leading gap
+		copyPose(i, first)
+	}
+	return pos, fwd
 }
 
 // N0 guards Counts length vs the number of selected views.
@@ -408,5 +550,26 @@ func atofDefault(s string, d float64) float64 {
 	if v, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
 		return v
 	}
+	return d
+}
+
+// boolForm parses a checkbox/toggle form value ("1"/"true"/"on"/"yes" => true).
+func boolForm(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// probeDurationSec returns the clip length in seconds via ffprobe, or 0 on failure.
+func probeDurationSec(path string) float64 {
+	out, err := exec.Command("ffprobe", "-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
+	if err != nil {
+		return 0
+	}
+	d, _ := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 	return d
 }
