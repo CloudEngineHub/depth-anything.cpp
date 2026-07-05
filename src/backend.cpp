@@ -70,38 +70,40 @@ Backend::Backend() : impl_(new Impl()) {
     if (!force_cpu) {
         // Walk the registry. Whatever backend was compiled in
         // (CUDA/Metal/Vulkan/HIP/SYCL) registers itself here, so this single path
-        // covers them all with no backend-specific includes. Integrated GPUs
-        // report GGML_BACKEND_DEVICE_TYPE_IGPU and are eligible too. When
-        // DA_DEVICE names a device, match by name; otherwise pick the first
-        // GPU/IGPU device.
-        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
-            const auto type = ggml_backend_dev_type(dev);
-            const char* name = ggml_backend_dev_name(dev);
-
-            bool selected;
-            if (!want.empty()) {
-                selected = name && iequals(want, name);  // explicit name match
-            } else {
-                selected = type == GGML_BACKEND_DEVICE_TYPE_GPU ||
-                           type == GGML_BACKEND_DEVICE_TYPE_IGPU;
-            }
-            if (!selected) continue;
-
-            impl_->backend = ggml_backend_dev_init(dev, nullptr);
-            if (impl_->backend) {
+        // covers them all with no backend-specific includes. try_pick inits the
+        // first registry device matching `match` and returns whether it stuck.
+        auto try_pick = [&](auto match) -> bool {
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+                const auto type = ggml_backend_dev_type(dev);
+                const char* name = ggml_backend_dev_name(dev);
+                if (!match(type, name)) continue;
+                impl_->backend = ggml_backend_dev_init(dev, nullptr);
+                if (!impl_->backend) continue;
                 device_name_ = name ? name : "";
                 // Route compute through ggml_backend_sched for any non-CPU device
                 // so unsupported ops can fall back to CPU.
                 impl_->use_sched = type != GGML_BACKEND_DEVICE_TYPE_CPU;
                 offloading_      = impl_->use_sched;
                 DA_LOG("da::Backend using device: %s", device_name_.c_str());
-                break;
+                return true;
             }
+            return false;
+        };
+
+        if (!want.empty()) {
+            // Explicit DA_DEVICE: match by name (e.g. "Vulkan1", "CUDA0").
+            if (!try_pick([&](auto, const char* name) { return name && iequals(want, name); }))
+                DA_LOG("da::Backend: DA_DEVICE=%s not found; falling back to CPU",
+                       want.c_str());
+        } else {
+            // Auto-pick: prefer a DISCRETE GPU over an integrated one. On multi-GPU
+            // boxes the iGPU often enumerates first (device 0) but is far weaker and
+            // can wedge on big models — so only fall back to IGPU if no discrete GPU
+            // is present.
+            (void)(try_pick([](auto type, const char*) { return type == GGML_BACKEND_DEVICE_TYPE_GPU; }) ||
+                   try_pick([](auto type, const char*) { return type == GGML_BACKEND_DEVICE_TYPE_IGPU; }));
         }
-        if (!want.empty() && !impl_->backend)
-            DA_LOG("da::Backend: DA_DEVICE=%s not found; falling back to CPU",
-                   want.c_str());
     }
     if (!impl_->backend) {              // CPU fallback (or CPU-only build)
         impl_->backend = ggml_backend_cpu_init();
