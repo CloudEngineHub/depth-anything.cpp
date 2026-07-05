@@ -383,11 +383,24 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 	asVoxels := mode == "voxels"
 	var cell float64
 	if asVoxels {
-		if voxelRes < 1 {
-			voxelRes = 100
+		if fuse {
+			// Follow the fusion grid: the cloud is already one point per fusion voxel,
+			// so render one cube per fusion voxel instead of re-blocking on a second
+			// grid. Use the same scene-relative fraction the C-side TSDF used (see
+			// da_capi/tsdf fuse_voxel_frac; 0 => its 0.4%-of-bbox-diagonal default).
+			frac := fuseVoxelFrac
+			if frac <= 0 {
+				frac = 0.004
+			}
+			cell = frac * cloudBBoxDiag(cloud, cloud.N)
+			log.Printf("scene %s: voxel mode follows fusion cell=%.5g (frac=%.4g)", name, cell, frac)
+		} else {
+			if voxelRes < 1 {
+				voxelRes = 100
+			}
+			cell = cloudBBoxDiag(cloud, cloud.N) / voxelRes
+			log.Printf("scene %s: voxel mode res=%.0f cell=%.5g", name, voxelRes, cell)
 		}
-		cell = cloudBBoxDiag(cloud, cloud.N) / voxelRes
-		log.Printf("scene %s: voxel mode res=%.0f cell=%.5g", name, voxelRes, cell)
 	} else {
 		// Additive reveal: overlapping frames re-observe the same surface, so revealing a
 		// new frame otherwise re-blends already-shown regions. Collapse coincident points

@@ -122,13 +122,13 @@
 
     <div class="row" id="vidparams">
       <div><label class="fld">Max frames</label><input type="text" id="maxframes" value="60"/></div>
-      <div title="Frames solved together per cross-view pass. Bigger = fewer seams/less drift, but VRAM grows with view count — large windows on giant/nested can OOM. Effective max = Max frames.">
+      <div id="fld-window" title="Frames solved together per cross-view pass. Bigger = fewer seams/less drift, but VRAM grows with view count — large windows on giant/nested can OOM. Effective max = Max frames.">
         <label class="fld">Window</label><input type="text" id="chunk" value="12"/></div>
-      <div><label class="fld">Overlap</label><input type="text" id="overlap" value="3"/></div>
-      <div><label class="fld">Conf %</label><input type="text" id="confpct" value="55"/></div>
-      <div title="Depth-weighted density: 0 = uniform. Higher keeps more near-camera detail and thins far points (try 0.5–1.5).">
+      <div id="fld-overlap"><label class="fld">Overlap</label><input type="text" id="overlap" value="3"/></div>
+      <div id="fld-conf"><label class="fld">Conf %</label><input type="text" id="confpct" value="55"/></div>
+      <div id="fld-nearbias" title="Depth-weighted density: 0 = uniform. Higher keeps more near-camera detail and thins far points (try 0.5–1.5).">
         <label class="fld">Near bias</label><input type="text" id="nearbias" value="0"/></div>
-      <div title="Voxels mode only: grid cells across the scene. Lower = chunkier blocks (try 60–160).">
+      <div id="fld-voxelres" title="Voxels mode: grid cells across the scene. Lower = chunkier blocks (try 60–160). Ignored when Surface fusion is on — the cubes then follow the fusion voxel.">
         <label class="fld">Voxel res</label><input type="text" id="voxelres" value="100"/></div>
     </div>
 
@@ -139,10 +139,10 @@
         <input type="checkbox" id="loopclose"/> Loop closure (C)</label>
       <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none">
         <input type="checkbox" id="fuse"/> Surface fusion (A)</label>
-      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
+      <label id="fld-metric" class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
              title="Absolute metric scale (metres). Requires the DA3 Nested — metric model.">
         <input type="checkbox" id="metric"/> Metric (m)</label>
-      <label class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
+      <label id="fld-surfels" class="fld" style="display:flex;align-items:center;gap:6px;text-transform:none"
              title="Render points as flat surface disks (oriented by estimated normals) instead of round blobs.">
         <input type="checkbox" id="surfels" checked/> Surfels</label>
     </div>
@@ -504,21 +504,39 @@ function pickModel(name){ curModel=MODELS.find(m=>m.name===name)||null;
   vBtn.disabled=!(curModel&&curModel.pose);   // voxels need pose (same as points)
   const cur=document.querySelector('#modeseg button.on');
   if(cur&&cur.disabled) setMode("points");
+  updateControls();
 }
 // ---- mode / source segmented ----
 let mode="points", src="video";
-function setMode(m){ mode=m; document.querySelectorAll('#modeseg button').forEach(b=>b.classList.toggle("on",b.dataset.mode===m)); }
+function setMode(m){ mode=m; document.querySelectorAll('#modeseg button').forEach(b=>b.classList.toggle("on",b.dataset.mode===m)); updateControls(); }
 function setSrc(sv){ src=sv; document.querySelectorAll('#srcseg button').forEach(b=>b.classList.toggle("on",b.dataset.src===sv));
-  $("vidparams").classList.toggle("hide",sv!=="video"); chosen=null; dropText(); refreshGen(); }
+  chosen=null; dropText(); refreshGen(); updateControls(); }
 document.querySelectorAll('#modeseg button').forEach(b=>b.onclick=()=>{ if(!b.disabled) setMode(b.dataset.mode); });
 document.querySelectorAll('#srcseg button').forEach(b=>b.onclick=()=>setSrc(b.dataset.src));
 
-// Surface-fusion (TSDF) sliders: reveal only when fusion is on; live value readouts.
-const fuseCb=$("fuse");
-function syncFuse(){ $("fuseparams").classList.toggle("hide",!fuseCb.checked); }
-fuseCb.onchange=syncFuse; syncFuse();
+// Show only the inputs a given mode/model/source actually uses. Streaming controls
+// are video-only; window/overlap/conf/near-bias/de-ghost toggles don't apply to the
+// single-image gaussians mode; surfels shape the smooth point surface (cubes ignore
+// them); metric needs a metric-capable model; and Voxel res is unused when fusion
+// drives the cube grid.
+function show(id,on){ const e=$(id); if(e) e.classList.toggle("hide",!on); }
+function updateControls(){
+  const vid=(src==='video'), gs=(mode==='gaussians'), vox=(mode==='voxels');
+  const fuseOn=$('fuse').checked, metricModel=!!(curModel&&curModel.metric);
+  $('vidparams').classList.toggle('hide',!vid);
+  $('vidclean').classList.toggle('hide',!vid||gs);
+  $('fuseparams').classList.toggle('hide',!vid||gs||!fuseOn);
+  show('fld-window',!gs); show('fld-overlap',!gs); show('fld-conf',!gs); show('fld-nearbias',!gs);
+  show('fld-voxelres', vox && !fuseOn);          // fusion drives the cube grid when on
+  show('fld-surfels', !gs && !vox);
+  show('fld-metric', !gs && metricModel);
+}
+
+// Surface-fusion (TSDF) sliders: live value readouts (visibility via updateControls).
+$("fuse").onchange=updateControls;
 $("fusedetail").oninput=()=>$("fusedetailval").textContent=(+$("fusedetail").value*100).toFixed(2)+"%";
 $("fusetrunc").oninput=()=>$("fusetruncval").textContent=$("fusetrunc").value+"× voxel";
+updateControls();
 
 // ---- file pick / drop ----
 let chosen=null;
