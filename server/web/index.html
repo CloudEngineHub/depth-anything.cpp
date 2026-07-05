@@ -16,6 +16,13 @@
   * { margin: 0; box-sizing: border-box; }
   html, body { height: 100%; background: #0b0d10; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; color: #e8eaed; }
   #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  /* picture-in-picture of the source frame the flythrough camera is currently at */
+  #pip { position: fixed; top: 16px; right: 16px; z-index: 10; width: 260px; max-width: 34vw;
+    border: 1px solid rgba(255,255,255,.15); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 10px 34px rgba(0,0,0,.55); background: #0b0e13; }
+  #pip img { display: block; width: 100%; height: auto; }
+  #pip .cap { padding: 4px 9px; font-size: 11px; color: #9aa3b1; background: rgba(16,19,24,.82);
+    border-top: 1px solid rgba(255,255,255,.08); }
   #panel {
     position: fixed; top: 16px; left: 16px; z-index: 10; width: 320px; max-height: calc(100vh - 32px); overflow-y: auto;
     background: rgba(16,19,24,.86); backdrop-filter: blur(8px);
@@ -71,6 +78,7 @@
 </head>
 <body>
 <canvas id="gl"></canvas>
+<div id="pip" class="hide"><img id="pipimg" alt=""/><div class="cap" id="pipcap">source</div></div>
 <div id="panel">
   <h1>depth-anything.cpp · DA3 studio</h1>
   <div class="sub">video → coherent point cloud / gaussians, in the browser</div>
@@ -305,6 +313,16 @@ let sceneDiag=2;  // world-space bbox diagonal of the current cloud (for fly spe
 // the manifest. flyU is the smoothed fractional frame index the camera sits at; it chases
 // the frame revealed by the current build-up step, so scrubbing/playing flies the path.
 let flythrough=false, framePos=null, frameFwd=null, flyU=0, flyInit=false;
+// Picture-in-picture: show the source frame the flythrough camera is currently at.
+let pipFrame=-1;
+function showPip(fi){ const F=nFrames(); if(F<1||!curScene) return;
+  fi=Math.max(0,Math.min(F-1,fi));
+  if(fi!==pipFrame){ pipFrame=fi;
+    $("pipimg").src=`/scenes-assets/${curScene}/view_${fi}.jpg?v=${curBust}`;
+    $("pipcap").textContent=`source · frame ${fi+1}/${F}`; }
+  $("pip").classList.remove("hide");
+}
+function hidePip(){ pipFrame=-1; $("pip").classList.add("hide"); }
 // Incremental reveal: the whole cloud is ONE file, ordered frame-major then high-
 // confidence(small-radius)-first within each frame. `reveal` is how many primitives are
 // currently drawn; it eases toward `revealTarget` (set by the build-up step), so points
@@ -377,7 +395,9 @@ function render(){
     const look=[c.p[0]+c.f[0]*sceneDiag, c.p[1]+c.f[1]*sceneDiag, c.p[2]+c.f[2]*sceneDiag];
     view=lookAt(eye,look);
     sortDirty=true;                            // camera moves every frame -> keep splats sorted
+    showPip(Math.round(flyU));                 // source frame the camera is currently at
   }else{
+    if(pipFrame!==-1) hidePip();
     const speed=dist*0.02; const fwd=[Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)];
     const right=norm(cross([0,1,0],fwd));
     if(!orbitLimit){  // WASD panning would break the fixed input-view for gaussians
@@ -558,6 +578,7 @@ async function loadScenes(){
 async function openScene(name){
   curScene=name; curBust=Date.now();   // per-open cache-bust: a re-baked scene reuses
   curSplatURL="";                       // force the single cloud file to (re)load for this scene
+  hidePip();                            // reset the source-frame PiP for the new scene
   document.querySelectorAll(".card").forEach(c=>c.classList.toggle("active",c.dataset.name===name));
   const m=await (await fetch(`/scenes-assets/${name}/manifest.json?v=${curBust}`)).json();
   curMode=m.mode||"points"; gsCam=m.cam||null;
@@ -592,7 +613,7 @@ $("playbtn").onclick=()=>{ if(playTimer) stopPlay(); else playFrom(stepI>=steps.
 $("flybtn").onclick=()=>{ if($("flybtn").disabled) return;
   flythrough=!flythrough; $("flybtn").classList.toggle("on",flythrough); sortDirty=true;
   if(flythrough){ flyInit=false; }                 // snap the camera onto the path
-  else { framed=false; distLock=false; frameToData(); }  // restore a framed orbit view
+  else { framed=false; distLock=false; frameToData(); hidePip(); }  // restore a framed orbit view
 };
 function playFrom(i){ stopPlay(); $("playbtn").textContent="⏸"; let k=i; distLock=(k>0);
   // Start the reveal from this step so the build-up grows forward (not eases down from full).
