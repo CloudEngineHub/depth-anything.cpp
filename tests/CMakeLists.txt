@@ -39,6 +39,13 @@ da_add_test(test_winograd)
 da_add_test(test_linalg)
 da_add_test(test_sim3)
 da_add_test(test_stream_seam)
+da_add_test(test_geom_metrics)
+da_add_test(test_synth_scene)
+da_add_test(test_stream_synth)
+da_add_test(test_fuse)
+da_add_test(test_icp)
+da_add_test(test_posegraph)
+da_add_test(test_stream_loop)
 da_add_test(test_ray_pose)
 da_add_test(test_dpt_blocks)
 da_add_test(test_dpt_head)
@@ -53,6 +60,49 @@ da_add_test(test_engine_pose)
 da_add_test(test_engine_mv)
 da_add_test(test_quantize)
 da_add_test(test_quantize_accuracy)
+
+# Standalone harness for scripts/oracle_fuse.py (takes CLI args; not a ctest).
+add_executable(fuse_dump fuse_dump.cpp)
+target_link_libraries(fuse_dump PRIVATE depthanything)
+target_include_directories(fuse_dump PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Standalone harness for scripts/oracle_icp.py (takes CLI args; not a ctest).
+add_executable(icp_dump icp_dump.cpp)
+target_link_libraries(icp_dump PRIVATE depthanything)
+target_include_directories(icp_dump PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Standalone harness for scripts/oracle_posegraph.py (takes CLI args; not a ctest).
+add_executable(posegraph_dump posegraph_dump.cpp)
+target_link_libraries(posegraph_dump PRIVATE depthanything)
+target_include_directories(posegraph_dump PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Real-clip streaming de-ghosting regression (takes a model + frame dir; not a ctest).
+add_executable(stream_regress stream_regress.cpp)
+target_link_libraries(stream_regress PRIVATE depthanything)
+target_include_directories(stream_regress PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Metric-streaming prototype: scale-consistency of nested depth_metric across
+# consecutive frames (takes anyview+metric gguf + frame dir; not a ctest).
+add_executable(metric_probe metric_probe.cpp)
+target_link_libraries(metric_probe PRIVATE depthanything)
+target_include_directories(metric_probe PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Metric-streaming end-to-end check (relative vs metric cloud scale; not a ctest).
+add_executable(metric_stream_check metric_stream_check.cpp)
+target_link_libraries(metric_stream_check PRIVATE depthanything)
+target_include_directories(metric_stream_check PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
+
+# Max metric depth predicted across clips (takes anyview+metric gguf + dirs; not a ctest).
+add_executable(metric_maxdepth metric_maxdepth.cpp)
+target_link_libraries(metric_maxdepth PRIVATE depthanything)
+target_include_directories(metric_maxdepth PRIVATE
+    ${DA_ROOT}/src ${DA_ROOT}/include ${DA_ROOT}/third_party)
 
 # Standalone harness for scripts/parity_glb.py (takes CLI args; not a ctest).
 add_executable(glb_parity_dump glb_parity_dump.cpp)

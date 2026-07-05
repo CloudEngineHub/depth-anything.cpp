@@ -11,7 +11,11 @@ typedef struct da_ctx da_ctx;
    6: added da_capi_points_stream (sliding-window streaming cloud); removed the
       unused da_capi_depth_pose_multi.
    7: da_capi_gaussians also returns the input camera intrinsics + processed size
-      (out_intr[9], out_w, out_h) so the viewer can render from the input view. */
+      (out_intr[9], out_w, out_h) so the viewer can render from the input view.
+   8: da_capi_points_stream gained a `metric` flag (rescale the streamed cloud to
+      metres via the nested metric branch; requires a da_capi_load_nested ctx).
+   9: added da_capi_stream_last_poses — per-input-frame camera poses from the last
+      da_capi_points_stream call (for the viewer flythrough). */
 int         da_capi_abi_version(void);
 da_ctx*     da_capi_load(const char* gguf_path, int n_threads);  /* NULL on failure */
 /* Load a NESTED metric model from its two branches: the anyview (GIANT) GGUF and
@@ -92,12 +96,35 @@ int da_capi_points_multi(da_ctx* ctx, const char** image_paths, int n_images,
    out_counts (if non-NULL) is int[n_images] receiving per-INPUT-frame point counts
    (frame-major, for progressive build-up). On success sets *out_n and mallocs
    *out_xyz[3N] (world xyz, OpenCV frame), *out_rgb[3N] uint8, *out_radius[N]; free
-   xyz/radius via da_capi_free_floats and rgb via da_capi_free_bytes. 0 ok, -1 err. */
+   xyz/radius via da_capi_free_floats and rgb via da_capi_free_bytes. 0 ok, -1 err.
+
+   De-ghosting toggles (0=off, non-zero=on):
+     icp_refine  : point-to-plane ICP refinement of each window seam;
+     loop_close  : loop-closure detection + Sim3 pose-graph drift removal;
+     fuse        : final voxel/surface fusion (collapses doubled sheets, de-densifies)
+                   with cell fuse_voxel_m metres (<=0 => 0.03 m default). After fusion
+                   the point order is spatial, so out_counts is rescaled to sum to N.
+     metric      : rescale each window to absolute METRES via the nested metric branch
+                   (per-window robust-median scale_factor applied to depth + pose).
+                   REQUIRES a da_capi_load_nested ctx; returns -1 otherwise. Without it
+                   the cloud is at an arbitrary relative scale.
+
+   Per-frame camera poses (for the viewer flythrough) are stashed on the ctx and
+   retrieved separately via da_capi_stream_last_poses — this function is already at the
+   FFI argument-count ceiling, so they can't be added as out-params here. */
 int da_capi_points_stream(da_ctx* ctx, const char** image_paths, int n_images,
                           int chunk_size, int overlap, double conf_pct,
                           float point_size, int global_budget,
+                          int icp_refine, int loop_close, int fuse, int metric,
+                          double fuse_voxel_m,
                           int* out_n, int* out_counts,
                           float** out_xyz, unsigned char** out_rgb, float** out_radius);
+
+/* Per-input-frame camera poses from the most recent da_capi_points_stream call.
+   Mallocs *out_pos[3F] (camera centre) and *out_fwd[3F] (unit view direction), OpenCV
+   world axes; sets *out_nframes = F (== that call's n_images). Free via
+   da_capi_free_floats. Returns 0 ok, -1 if none (no stream run / all windows failed). */
+int da_capi_stream_last_poses(da_ctx* ctx, float** out_pos, float** out_fwd, int* out_nframes);
 
 /* Single-image 3D GAUSSIANS (DA3-GIANT / GS-head models only; returns -1 with a
    clear last_error otherwise). Returns world-frame (OpenCV) gaussians as parallel

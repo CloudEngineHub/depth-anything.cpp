@@ -6,7 +6,10 @@
 #include "colmap_export.hpp"
 #include "reconstruct.hpp"
 #include "stream.hpp"
+#include "fuse.hpp"
+#include "common.hpp"
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -16,7 +19,14 @@
 #include <utility>
 #include <vector>
 
-struct da_ctx { std::unique_ptr<da::Engine> engine; std::string last_error; };
+struct da_ctx {
+    std::unique_ptr<da::Engine> engine;
+    std::string last_error;
+    // Per-frame capture poses from the most recent da_capi_points_stream call (OpenCV
+    // axes, 3F each). da_capi_points_stream is at the purego arg-count ceiling, so these
+    // are retrieved via da_capi_stream_last_poses instead of as out-params.
+    std::vector<float> frame_pos, frame_fwd;
+};
 
 static char* dup_cstr(const std::string& s){
     char* p = (char*)std::malloc(s.size()+1);
@@ -70,7 +80,7 @@ static bool capi_run_nested(da_ctx* c, const char* image_path,
 }
 
 extern "C" {
-int da_capi_abi_version(void){ return 7; }
+int da_capi_abi_version(void){ return 9; }
 da_ctx* da_capi_load(const char* path, int n_threads){
     if (!path) return nullptr;
     auto e = da::Engine::load(path, n_threads);
@@ -355,11 +365,14 @@ int da_capi_points_multi(da_ctx* c, const char** paths, int n_images,
 int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
                           int chunk_size, int overlap, double conf_pct,
                           float point_size, int global_budget,
+                          int icp_refine, int loop_close, int fuse, int metric,
+                          double fuse_voxel_m,
                           int* out_n, int* out_counts,
                           float** out_xyz, unsigned char** out_rgb, float** out_radius){
     if (out_xyz) *out_xyz = nullptr;
     if (out_rgb) *out_rgb = nullptr;
     if (out_radius) *out_radius = nullptr;
+    if (c){ c->frame_pos.clear(); c->frame_fwd.clear(); }
     if (!c || !c->engine || !image_paths || n_images <= 0){ if (c) c->last_error = "points_stream: bad args"; return -1; }
     if (c->engine->is_mono() || c->engine->is_da2()){
         c->last_error = "points_stream: model has no camera pose; use a DualDPT DA3 model"; return -1; }
@@ -375,9 +388,44 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
     sp.conf_pct = conf_pct;
     if (point_size > 0.f) sp.point_size = point_size;
     sp.global_budget = global_budget;
+    sp.icp_refine = (icp_refine != 0);   // task B
+    sp.loop_close = (loop_close != 0);   // task C
+    sp.metric     = (metric != 0);       // absolute-metres rescale (nested engine only)
+    if (sp.metric && !c->engine->is_nested()){
+        c->last_error = "points_stream: metric requires a nested (anyview+metric) model; load via da_capi_load_nested";
+        return -1; }
 
     da::StreamCloud sc;
     if (!da::stream_points(*c->engine, paths, c->engine->config(), sp, sc, c->last_error)) return -1;
+
+    // Task A: optional final surface fusion (collapses doubled sheets + de-densifies).
+    if (fuse != 0){
+        da::FuseParams fp;
+        float v = (float)fuse_voxel_m;
+        if (!(v > 0.f) && !sc.xyz.empty()){
+            // No voxel given: derive one from the cloud's extent, because monocular
+            // reconstructions live at an arbitrary metric scale (a fixed cm-voxel
+            // would either no-op or collapse the whole cloud). ~0.4% of the bbox diag.
+            float lo[3]={sc.xyz[0],sc.xyz[1],sc.xyz[2]}, hi[3]={sc.xyz[0],sc.xyz[1],sc.xyz[2]};
+            for (size_t i=0;i<sc.xyz.size()/3;++i) for(int k=0;k<3;++k){
+                lo[k]=std::min(lo[k],sc.xyz[3*i+k]); hi[k]=std::max(hi[k],sc.xyz[3*i+k]); }
+            float diag=std::sqrt((hi[0]-lo[0])*(hi[0]-lo[0])+(hi[1]-lo[1])*(hi[1]-lo[1])+(hi[2]-lo[2])*(hi[2]-lo[2]));
+            v = (diag>0.f) ? 0.004f*diag : 0.03f;
+        }
+        if (!(v > 0.f)) v = 0.03f;
+        fp.radius = v; fp.voxel = v;
+        long pre = 0; for (int cc : sc.counts) pre += cc;
+        size_t pre_pts = sc.radius.size();
+        auto t_fuse0 = std::chrono::steady_clock::now();
+        int nf = da::fuse_voxel(sc.xyz, sc.rgb, sc.radius, fp);
+        DA_LOG("stream timing: fuse(cpu)=%.2fs  %zu->%d pts",
+               std::chrono::duration<double>(std::chrono::steady_clock::now()-t_fuse0).count(),
+               pre_pts, nf);
+        // Fusion reorders points spatially, so per-frame attribution is lost; rescale
+        // the build-up counts to sum to the fused N (keeps the progressive reveal valid).
+        if (pre > 0) for (int& cc : sc.counts) cc = (int)((long long)cc * nf / pre);
+    }
+
     const size_t np = sc.radius.size();
     if (np == 0){ c->last_error = "points_stream: no points"; return -1; }
 
@@ -393,6 +441,36 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
     if (out_rgb) *out_rgb = rgb; else std::free(rgb);
     if (out_radius) *out_radius = rad; else std::free(rad);
     if (out_n) *out_n = (int)np;
+
+    // Stash per-frame camera poses for da_capi_stream_last_poses (flythrough). These are
+    // unaffected by fusion (it only touches points).
+    if ((int)sc.frame_pos.size() == 3 * n_images && (int)sc.frame_fwd.size() == 3 * n_images){
+        c->frame_pos = std::move(sc.frame_pos);
+        c->frame_fwd = std::move(sc.frame_fwd);
+    }
+    return 0;
+}
+
+// Retrieve the per-input-frame camera poses stashed by the most recent
+// da_capi_points_stream call (kept separate because that function is at the FFI
+// arg-count ceiling). Mallocs *out_pos[3F] (camera centre) and *out_fwd[3F] (unit view
+// direction), OpenCV world axes; sets *out_nframes = F. Free via da_capi_free_floats.
+// Returns 0 ok, -1 if no poses are available (e.g. no stream run, or all windows failed).
+int da_capi_stream_last_poses(da_ctx* c, float** out_pos, float** out_fwd, int* out_nframes){
+    if (out_pos) *out_pos = nullptr;
+    if (out_fwd) *out_fwd = nullptr;
+    if (out_nframes) *out_nframes = 0;
+    if (!c || c->frame_pos.empty() || c->frame_pos.size() != c->frame_fwd.size()){
+        if (c) c->last_error = "stream_last_poses: no poses available"; return -1; }
+    const size_t sz = c->frame_pos.size();
+    float* pos = (float*)std::malloc(sz * sizeof(float));
+    float* fwd = (float*)std::malloc(sz * sizeof(float));
+    if (!pos || !fwd){ std::free(pos); std::free(fwd); c->last_error = "stream_last_poses: oom"; return -1; }
+    std::memcpy(pos, c->frame_pos.data(), sz * sizeof(float));
+    std::memcpy(fwd, c->frame_fwd.data(), sz * sizeof(float));
+    if (out_pos) *out_pos = pos; else std::free(pos);
+    if (out_fwd) *out_fwd = fwd; else std::free(fwd);
+    if (out_nframes) *out_nframes = (int)(sz / 3);
     return 0;
 }
 

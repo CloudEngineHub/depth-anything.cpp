@@ -26,8 +26,9 @@ type capi struct {
 	pointsMulti func(ctx uintptr, paths uintptr, n int32, confPct float64, ptSize float32,
 		outN, outCounts, outXyz, outRgb, outRad unsafe.Pointer) int32
 	pointsStream func(ctx uintptr, paths uintptr, n, chunk, overlap int32, confPct float64,
-		ptSize float32, budget int32,
+		ptSize float32, budget int32, icpRefine, loopClose, fuse, metric int32, fuseVoxel float64,
 		outN, outCounts, outXyz, outRgb, outRad unsafe.Pointer) int32
+	streamPoses func(ctx uintptr, outPos, outFwd, outNFrames unsafe.Pointer) int32
 	gaussians func(ctx uintptr, path string,
 		outN, outXyz, outScale, outQuat, outRgb, outOpacity,
 		outIntr, outW, outH unsafe.Pointer) int32
@@ -48,6 +49,7 @@ func openCAPI(libPath string) (*capi, error) {
 	purego.RegisterLibFunc(&a.freeBytes, h, "da_capi_free_bytes")
 	purego.RegisterLibFunc(&a.pointsMulti, h, "da_capi_points_multi")
 	purego.RegisterLibFunc(&a.pointsStream, h, "da_capi_points_stream")
+	purego.RegisterLibFunc(&a.streamPoses, h, "da_capi_stream_last_poses")
 	purego.RegisterLibFunc(&a.gaussians, h, "da_capi_gaussians")
 	return a, nil
 }
@@ -90,11 +92,15 @@ func cBytes(p uintptr, n int) []byte {
 
 // Cloud is a fused multi-view colored point cloud (world frame, OpenCV axes).
 type Cloud struct {
-	N      int
-	XYZ    []float32 // 3N
-	RGB    []byte    // 3N
-	Rad    []float32 // N (per-point world radius)
-	Counts []int32   // per source view (frames outer; for build-up prefix sums)
+	N       int
+	XYZ     []float32 // 3N
+	RGB     []byte    // 3N
+	Rad     []float32 // N (per-point world radius)
+	Normals []float32 // 3N surface normals (OpenCV space), empty unless surfels requested
+	Counts  []int32   // per source view (frames outer; for build-up prefix sums)
+	// Per-input-frame camera poses (OpenCV world axes), for viewer flythrough. Length 3F each.
+	FramePos []float32 // global camera centre per frame
+	FrameFwd []float32 // global unit view direction per frame
 }
 
 // PointsMulti runs ONE cross-view pass over the given image files and returns the
@@ -132,11 +138,22 @@ func (a *capi) PointsMulti(ctx uintptr, paths []string, confPct float64, ptSize 
 	return cl, nil
 }
 
+func b2i32(b bool) int32 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // PointsStream runs the SLIDING-WINDOW streaming pipeline over an ordered frame
 // list (time-lapse video): overlapping fused windows of `chunk` frames (sharing
 // `overlap`) stitched into one global cloud. budget caps total points (0 = unlimited).
-// Counts is per-input-frame (frame-major) for progressive build-up.
-func (a *capi) PointsStream(ctx uintptr, paths []string, chunk, overlap int, confPct float64, ptSize float32, budget int) (*Cloud, error) {
+// Counts is per-input-frame (frame-major) for progressive build-up. The de-ghosting
+// toggles map to StreamParams: icpRefine (per-seam point-to-plane ICP, task B),
+// loopClose (loop closure + Sim3 pose-graph, task C), and fuse (final voxel/surface
+// fusion, task A) with cell fuseVoxel metres (<=0 => default).
+func (a *capi) PointsStream(ctx uintptr, paths []string, chunk, overlap int, confPct float64, ptSize float32, budget int,
+	icpRefine, loopClose, fuse, metric bool, fuseVoxel float64) (*Cloud, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no images")
 	}
@@ -152,6 +169,7 @@ func (a *capi) PointsStream(ctx uintptr, paths []string, chunk, overlap int, con
 	var pXyz, pRgb, pRad uintptr
 	rc := a.pointsStream(ctx, uintptr(unsafe.Pointer(&pp[0])), int32(len(paths)),
 		int32(chunk), int32(overlap), confPct, ptSize, int32(budget),
+		b2i32(icpRefine), b2i32(loopClose), b2i32(fuse), b2i32(metric), fuseVoxel,
 		unsafe.Pointer(&n), unsafe.Pointer(&counts[0]),
 		unsafe.Pointer(&pXyz), unsafe.Pointer(&pRgb), unsafe.Pointer(&pRad))
 	runtime.KeepAlive(cs)
@@ -165,6 +183,20 @@ func (a *capi) PointsStream(ctx uintptr, paths []string, chunk, overlap int, con
 	a.freeFloats(pXyz)
 	a.freeBytes(pRgb)
 	a.freeFloats(pRad)
+
+	// Per-frame capture poses (for viewer flythrough), fetched separately because
+	// pointsStream is at the FFI arg-count ceiling. Best-effort: a scene without poses
+	// simply has no flythrough.
+	var nFrames int32
+	var pFramePos, pFrameFwd uintptr
+	if a.streamPoses(ctx, unsafe.Pointer(&pFramePos), unsafe.Pointer(&pFrameFwd), unsafe.Pointer(&nFrames)) == 0 {
+		if nf := int(nFrames); nf > 0 && pFramePos != 0 && pFrameFwd != 0 {
+			cl.FramePos = cFloats(pFramePos, nf*3)
+			cl.FrameFwd = cFloats(pFrameFwd, nf*3)
+		}
+		a.freeFloats(pFramePos)
+		a.freeFloats(pFrameFwd)
+	}
 	return cl, nil
 }
 
