@@ -66,6 +66,7 @@ set(DA_SOURCES
     src/sim3.cpp
     src/stream.cpp
     src/fuse.cpp
+    src/tsdf.cpp
     src/icp.cpp
     src/posegraph.cpp
     src/ray_pose.cpp

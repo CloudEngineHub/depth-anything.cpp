@@ -7,6 +7,7 @@
 #include "reconstruct.hpp"
 #include "stream.hpp"
 #include "fuse.hpp"
+#include "tsdf.hpp"
 #include "common.hpp"
 #include <cctype>
 #include <chrono>
@@ -398,27 +399,21 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
     da::StreamCloud sc;
     if (!da::stream_points(*c->engine, paths, c->engine->config(), sp, sc, c->last_error)) return -1;
 
-    // Task A: optional final surface fusion (collapses doubled sheets + de-densifies).
+    // Task A: optional final surface fusion. A normal-space TSDF (src/tsdf.cpp)
+    // collapses doubled/misaligned sheets into a single zero-crossing surface —
+    // unlike a plain voxel downsample, which keeps both sheets when their gap
+    // exceeds a cell. fuse_voxel_m sets the voxel edge (0 => scene-relative default);
+    // the truncation band (max merge gap = 2*trunc) defaults to 4 voxels inside.
     if (fuse != 0){
-        da::FuseParams fp;
-        float v = (float)fuse_voxel_m;
-        if (!(v > 0.f) && !sc.xyz.empty()){
-            // No voxel given: derive one from the cloud's extent, because monocular
-            // reconstructions live at an arbitrary metric scale (a fixed cm-voxel
-            // would either no-op or collapse the whole cloud). ~0.4% of the bbox diag.
-            float lo[3]={sc.xyz[0],sc.xyz[1],sc.xyz[2]}, hi[3]={sc.xyz[0],sc.xyz[1],sc.xyz[2]};
-            for (size_t i=0;i<sc.xyz.size()/3;++i) for(int k=0;k<3;++k){
-                lo[k]=std::min(lo[k],sc.xyz[3*i+k]); hi[k]=std::max(hi[k],sc.xyz[3*i+k]); }
-            float diag=std::sqrt((hi[0]-lo[0])*(hi[0]-lo[0])+(hi[1]-lo[1])*(hi[1]-lo[1])+(hi[2]-lo[2])*(hi[2]-lo[2]));
-            v = (diag>0.f) ? 0.004f*diag : 0.03f;
-        }
-        if (!(v > 0.f)) v = 0.03f;
-        fp.radius = v; fp.voxel = v;
+        da::TsdfParams tp;
+        tp.voxel = (float)fuse_voxel_m;   // <=0 => fuse_tsdf derives ~0.4% of bbox diag
         long pre = 0; for (int cc : sc.counts) pre += cc;
         size_t pre_pts = sc.radius.size();
         auto t_fuse0 = std::chrono::steady_clock::now();
-        int nf = da::fuse_voxel(sc.xyz, sc.rgb, sc.radius, fp);
-        DA_LOG("stream timing: fuse(cpu)=%.2fs  %zu->%d pts",
+        // frame_pos orients normals toward the observing camera (correct SDF sign);
+        // weights default to 1/radius inside (near/high-confidence points dominate).
+        int nf = da::fuse_tsdf(sc.xyz, sc.rgb, sc.radius, tp, nullptr, &sc.frame_pos);
+        DA_LOG("stream timing: tsdf(cpu)=%.2fs  %zu->%d pts",
                std::chrono::duration<double>(std::chrono::steady_clock::now()-t_fuse0).count(),
                pre_pts, nf);
         // Fusion reorders points spatially, so per-frame attribution is lost; rescale
