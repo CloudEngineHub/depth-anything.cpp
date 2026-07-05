@@ -26,6 +26,19 @@ static inline VKey key_at(double x, double y, double z, double cell) {
     return { (int32_t)std::floor(x/cell), (int32_t)std::floor(y/cell), (int32_t)std::floor(z/cell) };
 }
 
+// Colours must be averaged in LINEAR light, not in gamma-encoded sRGB: averaging
+// sRGB values pulls the mean toward black (the transfer curve is concave), so a
+// voxel merging any colour contrast comes out visibly darker. Convert sRGB u8 ->
+// linear before accumulating and back on output so merged colour keeps its brightness.
+static inline double srgb_to_lin(double v) {
+    double c = v / 255.0;
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+static inline double lin_to_srgb(double c) {
+    double s = c <= 0.0031308 ? 12.92 * c : 1.055 * std::pow(c, 1.0 / 2.4) - 0.055;
+    return s * 255.0;
+}
+
 // Per-voxel signed-distance accumulator. sdf/nrm/col are confidence-weighted sums;
 // divide by w at the end. hits counts contributing deposits (speckle cull).
 struct Cell {
@@ -105,9 +118,9 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
         double w = have_w ? (double)(*weights)[i]
                           : (have_rad ? 1.0/((double)radius[i] + eps) : 1.0);
         if (!(w > 0)) w = eps;
-        const double cr = have_rgb ? rgb[3*i]   : 200.0;
-        const double cg = have_rgb ? rgb[3*i+1] : 200.0;
-        const double cb = have_rgb ? rgb[3*i+2] : 200.0;
+        const double cr = srgb_to_lin(have_rgb ? rgb[3*i]   : 200.0);   // accumulate in
+        const double cg = srgb_to_lin(have_rgb ? rgb[3*i+1] : 200.0);   // linear light so
+        const double cb = srgb_to_lin(have_rgb ? rgb[3*i+2] : 200.0);   // merging keeps brightness
         const double ri = have_rad ? radius[i]  : (float)vox;
         // March along ±normal one voxel at a time; deposit into each distinct voxel
         // the SIGNED distance from the surface (point) to that voxel's centre.
@@ -154,8 +167,11 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
         o.frame = (c.fmin == INT32_MAX) ? 0 : c.fmin;
         double iw = 1.0/c.w;
         auto c8 = [](double v){ double x=std::max(0.0,std::min(255.0,v)); return (uint8_t)std::lround(x); };
-        o.r = c8(c.cr*iw); o.g = c8(c.cg*iw); o.b = c8(c.cb*iw);
-        o.rad = (float)(c.rad*iw);
+        o.r = c8(lin_to_srgb(c.cr*iw)); o.g = c8(lin_to_srgb(c.cg*iw)); o.b = c8(lin_to_srgb(c.cb*iw));
+        // Size each splat to its voxel so the one-point-per-cell surface tiles solidly.
+        // Keeping the (much smaller) averaged input radius leaves dark gaps between the
+        // now voxel-spaced points, which reads as a dark, sparse surface.
+        o.rad = (float)(0.6 * vox);
         outs.push_back(o);
     }
     // Order FRAME-MAJOR (so the flythrough/build-up reveal, which reveals a frame
