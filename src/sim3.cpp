@@ -34,6 +34,23 @@ Sim3 sim3_compose(const Sim3& A, const Sim3& B) {
     return C;
 }
 
+Sim3 sim3_inverse(const Sim3& T) {
+    // y = s R x + t  =>  x = (1/s) R^T (y - t).
+    Sim3 inv;
+    inv.s = (T.s != 0.0) ? 1.0 / T.s : 0.0;
+    linalg::mat3_transpose(T.R, inv.R);
+    // t' = -(1/s) R^T t
+    double rtt[3] = {
+        inv.R[0]*T.t[0] + inv.R[1]*T.t[1] + inv.R[2]*T.t[2],
+        inv.R[3]*T.t[0] + inv.R[4]*T.t[1] + inv.R[5]*T.t[2],
+        inv.R[6]*T.t[0] + inv.R[7]*T.t[1] + inv.R[8]*T.t[2],
+    };
+    inv.t[0] = -inv.s * rtt[0];
+    inv.t[1] = -inv.s * rtt[1];
+    inv.t[2] = -inv.s * rtt[2];
+    return inv;
+}
+
 // Unit quaternion (w,x,y,z) -> row-major active rotation matrix.
 static void quat_to_R(const double q[4], double R[9]) {
     double w = q[0], x = q[1], y = q[2], z = q[3];

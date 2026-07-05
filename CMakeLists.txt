@@ -65,6 +65,9 @@ set(DA_SOURCES
     src/linalg.cpp
     src/sim3.cpp
     src/stream.cpp
+    src/fuse.cpp
+    src/icp.cpp
+    src/posegraph.cpp
     src/ray_pose.cpp
     src/nested.cpp
     src/depth_export.cpp
@@ -93,6 +96,18 @@ if(DA_HAS_AVX512F)
         COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mfma")
 endif()
 target_link_libraries(depthanything PUBLIC ggml)
+
+# OpenMP for the single-threaded CPU geometry post-processing (surface fusion,
+# per-seam ICP, normal estimation). ggml already pulls OpenMP into the toolchain;
+# link it into OUR target too so the #pragma omp loops in fuse.cpp/icp.cpp use all
+# cores instead of one. Optional: without it the pragmas compile to no-ops.
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(depthanything PUBLIC OpenMP::OpenMP_CXX)
+    message(STATUS "depth-anything.cpp: OpenMP enabled for CPU geometry")
+else()
+    message(STATUS "depth-anything.cpp: OpenMP NOT found — CPU geometry stays single-threaded")
+endif()
 
 if(DA_BUILD_CLI AND EXISTS ${DA_ROOT}/examples/cli/CMakeLists.txt)
     add_subdirectory(examples/cli)

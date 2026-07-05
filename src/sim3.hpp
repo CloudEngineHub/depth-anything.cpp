@@ -18,6 +18,9 @@ void sim3_apply(const Sim3& T, const double p[3], double out[3]);
 // Returns A∘B with (A∘B)(x) = A(B(x)).
 Sim3 sim3_compose(const Sim3& A, const Sim3& B);
 
+// Returns T^{-1}: if y = s*R*x + t then x = (1/s)*R^T*(y - t).
+Sim3 sim3_inverse(const Sim3& T);
+
 // Weighted Umeyama similarity fitting src -> tgt, refined by Huber IRLS.
 //   src,tgt : length 3*M (x,y,z interleaved).
 //   w       : length M, per-correspondence weight (>=0; e.g. min confidence).
