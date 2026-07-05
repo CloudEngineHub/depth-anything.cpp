@@ -38,6 +38,7 @@ struct Backend::Impl {
     ggml_backend_t       cpu_backend = nullptr;  // CPU fallback (GPU path only)
     ggml_gallocr_t       galloc      = nullptr;  // CPU / single-backend path (unchanged)
     ggml_backend_sched_t sched       = nullptr;  // GPU path: schedules over {backend, cpu_backend}
+    size_t               sched_nodes = 0;        // graph_size the sched was created with (recreated when a bigger graph arrives)
     bool                 use_sched   = false;    // true only when `backend` is a GPU device
     // Inputs registered by the build lambda for the in-flight compute. Copied
     // into the allocated tensors after the graph is allocated, then cleared.
@@ -209,17 +210,18 @@ void Backend::add_graph_root(ggml_tensor* t) {
 }
 
 bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
-                      std::vector<float>& out) {
+                      std::vector<float>& out, size_t graph_nodes) {
     if (!impl_ || !impl_->backend) {
         DA_LOG("Backend::compute called on an uninitialised backend");
         return false;
     }
+    const size_t gs = graph_nodes ? graph_nodes : kGraphSize;
 
     // Metadata-only context: holds graph + tensor structs, no tensor data
     // (no_alloc=true). Tensor data lives in the gallocr's persistent buffer.
     struct ggml_init_params params = {
-        /* .mem_size   = */ ggml_tensor_overhead() * kGraphSize +
-                            ggml_graph_overhead_custom(kGraphSize, false),
+        /* .mem_size   = */ ggml_tensor_overhead() * gs +
+                            ggml_graph_overhead_custom(gs, false),
         /* .mem_buffer = */ nullptr,
         /* .no_alloc   = */ true,
     };
@@ -249,7 +251,7 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
     ggml_set_output(output);
     for (const PendingCapture& pc : impl_->captures) ggml_set_output(pc.tensor);
 
-    struct ggml_cgraph* gf = ggml_new_graph_custom(ctx, kGraphSize, false);
+    struct ggml_cgraph* gf = ggml_new_graph_custom(ctx, gs, false);
     // Expand captures FIRST so they are present in the graph even if the final
     // output's subgraph does not reach them.
     for (const PendingCapture& pc : impl_->captures)
@@ -281,11 +283,16 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
     bool alloc_ok = false;
     if (need_sched) {
         // GPU path: schedule across {GPU, CPU}. Unsupported ops fall back to CPU.
-        if (!impl_->sched) {
+        // (Re)create the scheduler if absent or too small for this graph. It's created
+        // once and reused, so a later, larger window (more views => more nodes) needs a
+        // bigger sched than the first call sized it for.
+        if (!impl_->sched || gs > impl_->sched_nodes) {
+            if (impl_->sched) ggml_backend_sched_free(impl_->sched);
             ggml_backend_t backs[2] = { impl_->backend, impl_->cpu_backend };
             impl_->sched = ggml_backend_sched_new(
                 backs, /*bufts=*/nullptr, /*n_backends=*/2,
-                /*graph_size=*/kGraphSize, /*parallel=*/false, /*op_offload=*/true);
+                /*graph_size=*/gs, /*parallel=*/false, /*op_offload=*/true);
+            impl_->sched_nodes = gs;
             if (!impl_->sched) {
                 DA_LOG("Backend::compute: ggml_backend_sched_new failed");
                 impl_->pending.clear();
@@ -369,9 +376,9 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
 }
 
 bool Backend::forward_capture(const std::function<ggml_tensor*(ggml_context*)>& build,
-                              std::vector<float>& out) {
+                              std::vector<float>& out, size_t graph_nodes) {
     // Same path as compute(); captures registered during build are honored.
-    return compute(build, out);
+    return compute(build, out, graph_nodes);
 }
 
 }  // namespace da

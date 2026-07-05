@@ -64,11 +64,16 @@ public:
     ggml_tensor* add_int32_input_nd(ggml_context* ctx, GraphInputPool& pool,
                                     const int32_t* host, const int64_t* ne, int n_dims);
     // Build -> alloc (persistent gallocr) -> upload inputs -> compute -> read output.
+    // Default graph-node budget for the metadata context. Multi-view graphs scale this
+    // with their view count (see dino_backbone) so large windows don't overflow the pool
+    // and abort (ggml_new_object hard-asserts on overflow — it can't be caught).
+    static constexpr size_t kDefaultGraphNodes = 49152;
+    // graph_nodes overrides the node budget for this call (0 => kDefaultGraphNodes).
     bool compute(const std::function<ggml_tensor*(ggml_context*)>& build,
-                 std::vector<float>& out);
+                 std::vector<float>& out, size_t graph_nodes = 0);
     // Like compute but also reads back tensors registered via capture() during build.
     bool forward_capture(const std::function<ggml_tensor*(ggml_context*)>& build,
-                         std::vector<float>& out);
+                         std::vector<float>& out, size_t graph_nodes = 0);
     void capture(ggml_tensor* t, std::vector<float>* dst);  // read this node back too
     // Allocate a persistent backend buffer for all tensors in `ctx` (for ResidentKV).
     // The buffer is on THIS backend (must match the compute gallocr's backend).

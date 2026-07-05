@@ -353,7 +353,8 @@ bool DinoBackbone::capture_local_cls(const std::vector<std::vector<float>>& view
             last = xv;
         }
         return last;
-    }, throwaway);
+    // scale the graph-node budget with the view count so large windows don't overflow it
+    }, throwaway, std::max<size_t>(Backend::kDefaultGraphNodes, Backend::kDefaultGraphNodes * ((size_t)S + 8) / 24));
     if (!ok) return false;
     cls_out.assign(S, {});
     for (int s=0;s<S;++s){
@@ -572,7 +573,8 @@ bool DinoBackbone::forward_mv_ordered(const std::vector<std::vector<float>>& vie
             }
         }
         return x;
-    }, throwaway);
+    // scale the graph-node budget with the view count so large windows don't overflow it
+    }, throwaway, std::max<size_t>(Backend::kDefaultGraphNodes, Backend::kDefaultGraphNodes * ((size_t)S + 8) / 24));
     if (!ok) return false;
 
     // Host post-process per view (matches the S=1 path, repeated per view-slice).
