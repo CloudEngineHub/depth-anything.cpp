@@ -34,17 +34,21 @@ struct Cell {
     double cr = 0, cg = 0, cb = 0;         // Σ wi*rgb
     double rad = 0;                        // Σ wi*radius
     int    hits = 0;
+    int    fmin = INT32_MAX;               // first (min) input frame that fed this voxel
 };
 
 int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
               std::vector<float>& radius, const TsdfParams& p,
               const std::vector<float>* weights,
-              const std::vector<float>* cameras) {
+              const std::vector<float>* cameras,
+              const std::vector<int>* in_frame,
+              std::vector<int>* out_frame) {
     const int N = (int)(xyz.size()/3);
     if (N < 8) return N;
     const bool have_rgb = ((int)rgb.size() == 3*N);
     const bool have_rad = ((int)radius.size() == N);
     const bool have_w   = (weights && (int)weights->size() == N);
+    const bool have_fr  = (in_frame && (int)in_frame->size() == N);
 
     // --- scene-relative defaults (arbitrary monocular scale) ---
     float lo[3] = {xyz[0],xyz[1],xyz[2]}, hi[3] = {xyz[0],xyz[1],xyz[2]};
@@ -121,12 +125,13 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
             c.nx += w*nx; c.ny += w*ny; c.nz += w*nz;
             c.cr += w*cr; c.cg += w*cg; c.cb += w*cb;
             c.rad += w*ri; c.hits++;
+            if (have_fr) { int f = (*in_frame)[i]; if (f < c.fmin) c.fmin = f; }
         }
     }
 
     // --- extract the zero-crossing shell: voxels whose centre is within half a cell
     // of the surface. Move each onto the level set along its averaged normal. ---
-    struct Out { VKey k; float x,y,z; uint8_t r,g,b; float rad; };
+    struct Out { VKey k; int frame; float x,y,z; uint8_t r,g,b; float rad; };
     std::vector<Out> outs;
     outs.reserve(field.size()/2 + 16);
     const double half = 0.5*vox;
@@ -143,14 +148,21 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
         Out o;
         o.k = kv.first;
         o.x = (float)(cx - D*nx); o.y = (float)(cy - D*ny); o.z = (float)(cz - D*nz);
+        // Reveal frame = the FIRST input frame that observed this voxel, so the
+        // additive flythrough reveals each surface as soon as any camera has seen it
+        // and never hides it again (nearest-camera instead back-loads the reveal).
+        o.frame = (c.fmin == INT32_MAX) ? 0 : c.fmin;
         double iw = 1.0/c.w;
         auto c8 = [](double v){ double x=std::max(0.0,std::min(255.0,v)); return (uint8_t)std::lround(x); };
         o.r = c8(c.cr*iw); o.g = c8(c.cg*iw); o.b = c8(c.cb*iw);
         o.rad = (float)(c.rad*iw);
         outs.push_back(o);
     }
-    // Deterministic order (hash iteration is unspecified): sort by voxel key.
+    // Order FRAME-MAJOR (so the flythrough/build-up reveal, which reveals a frame
+    // prefix, shows points as their first-observing camera is reached), with the
+    // voxel key as a deterministic tiebreak (hash iteration is unspecified).
     std::sort(outs.begin(), outs.end(), [](const Out& a, const Out& b){
+        if (a.frame != b.frame) return a.frame < b.frame;
         if (a.k.x != b.k.x) return a.k.x < b.k.x;
         if (a.k.y != b.k.y) return a.k.y < b.k.y;
         return a.k.z < b.k.z;
@@ -159,10 +171,12 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
     const int M = (int)outs.size();
     if (M == 0) return N;   // nothing extracted (degenerate) -> leave input untouched
     std::vector<float> ox(3*M), orad(M); std::vector<uint8_t> orgb(3*M);
+    if (out_frame) out_frame->resize(M);
     for (int i = 0; i < M; ++i) {
         ox[3*i]=outs[i].x; ox[3*i+1]=outs[i].y; ox[3*i+2]=outs[i].z;
         orgb[3*i]=outs[i].r; orgb[3*i+1]=outs[i].g; orgb[3*i+2]=outs[i].b;
         orad[i]=outs[i].rad;
+        if (out_frame) (*out_frame)[i] = outs[i].frame;
     }
     xyz.swap(ox);
     if (have_rgb) rgb.swap(orgb); else rgb.clear();

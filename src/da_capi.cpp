@@ -424,18 +424,36 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
         tp.voxel = (float)fuse_voxel_m;   // absolute override (harness); <=0 => use frac
         tp.voxel_frac = (float)c->fuse_voxel_frac;   // scene-relative "detail" knob
         tp.trunc_mult = (float)c->fuse_trunc_mult;   // scene-relative "merge range" knob
-        long pre = 0; for (int cc : sc.counts) pre += cc;
-        size_t pre_pts = sc.radius.size();
+        const int F = (int)sc.counts.size();
+        const size_t pre_pts = sc.radius.size();
+        // Per-input-point capture frame. The emitted cloud is frame-major, so the
+        // per-frame counts define the frame of each point index. Handing this to
+        // fuse_tsdf lets it tag each output voxel with its first-observing frame and
+        // emit FRAME-MAJOR, so the progressive/flythrough reveal (which reveals a
+        // frame prefix) still lines up after fusion.
+        std::vector<int> in_frame; in_frame.reserve(pre_pts);
+        for (int f = 0; f < F; ++f) for (int k = 0; k < sc.counts[f]; ++k) in_frame.push_back(f);
+        if (in_frame.size() != pre_pts) in_frame.clear();   // only use if it lines up
+        std::vector<int> out_frame;
         auto t_fuse0 = std::chrono::steady_clock::now();
         // frame_pos orients normals toward the observing camera (correct SDF sign);
         // weights default to 1/radius inside (near/high-confidence points dominate).
-        int nf = da::fuse_tsdf(sc.xyz, sc.rgb, sc.radius, tp, nullptr, &sc.frame_pos);
+        int nf = da::fuse_tsdf(sc.xyz, sc.rgb, sc.radius, tp, nullptr, &sc.frame_pos,
+                               in_frame.empty() ? nullptr : &in_frame, &out_frame);
         DA_LOG("stream timing: tsdf(cpu)=%.2fs  %zu->%d pts",
                std::chrono::duration<double>(std::chrono::steady_clock::now()-t_fuse0).count(),
                pre_pts, nf);
-        // Fusion reorders points spatially, so per-frame attribution is lost; rescale
-        // the build-up counts to sum to the fused N (keeps the progressive reveal valid).
-        if (pre > 0) for (int& cc : sc.counts) cc = (int)((long long)cc * nf / pre);
+        // Rebuild real per-frame counts from the fused points' first-observing frame
+        // (the cloud is now frame-major), so the reveal shows each surface as its
+        // capture frame is reached. Fall back to a proportional rescale if unavailable.
+        if ((int)out_frame.size() == nf && F > 0){
+            std::vector<int> cc(F, 0);
+            for (int f : out_frame) if (f >= 0 && f < F) cc[f]++;
+            sc.counts.swap(cc);
+        } else {
+            long pre = 0; for (int cc : sc.counts) pre += cc;
+            if (pre > 0) for (int& cc : sc.counts) cc = (int)((long long)cc * nf / pre);
+        }
     }
 
     const size_t np = sc.radius.size();

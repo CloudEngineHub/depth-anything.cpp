@@ -50,9 +50,18 @@ struct TsdfParams {
 // centres, world frame) orients each normal toward its nearest camera so the SDF
 // sign is globally consistent — REQUIRED for correct fusion; if empty, normals are
 // left with PCA's arbitrary sign and fusion degrades to a denoise.
+//
+// `in_frame` (length N, optional): the input capture frame of each point. When
+// given, each output surface voxel inherits the MINIMUM (first-observing) frame of
+// the points that fed it, the output is sorted frame-major by that frame, and (if
+// `out_frame` is non-null) the per-output-point frame is written there. This keeps
+// the progressive/flythrough reveal — which reveals a frame-major prefix — valid
+// after fusion; without it the output is voxel-sorted and reveal order is spatial.
 int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
               std::vector<float>& radius, const TsdfParams& p,
               const std::vector<float>* weights = nullptr,
-              const std::vector<float>* cameras = nullptr);
+              const std::vector<float>* cameras = nullptr,
+              const std::vector<int>* in_frame = nullptr,
+              std::vector<int>* out_frame = nullptr);
 
 } // namespace da
