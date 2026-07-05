@@ -106,6 +106,14 @@ public:
     // [H*W] row-major.
     bool depth_metric(const Image& img, NestedOut& out, int& H, int& W);
     bool depth_metric_path(const std::string& image_path, NestedOut& out, int& H, int& W);
+    // Run ONLY the metric (ViT-L + DPT/sky) branch on one image -> raw metric depth
+    // (pre-scaling) + sky, with the branch's own sky-fill applied. Requires
+    // load_nested(). Used by metric STREAMING to obtain a per-frame scale against
+    // the multi-view anyview depth (which the streaming pass already computed), so
+    // the whole window can be rescaled to metres without re-running the giant per
+    // frame. Returns false if not a nested engine or the branch fails.
+    bool metric_branch(const Image& img, std::vector<float>& depth_raw,
+                       std::vector<float>& sky, int& H, int& W);
 private:
     // Fused single-image depth: backbone feats + DPT head built into ONE ggml graph
     // (feats stay device-resident — no GPU->host->GPU round-trip). Parity-exact with
