@@ -15,8 +15,16 @@ typedef struct da_ctx da_ctx;
    8: da_capi_points_stream gained a `metric` flag (rescale the streamed cloud to
       metres via the nested metric branch; requires a da_capi_load_nested ctx).
    9: added da_capi_stream_last_poses — per-input-frame camera poses from the last
-      da_capi_points_stream call (for the viewer flythrough). */
+      da_capi_points_stream call (for the viewer flythrough).
+   10: added da_capi_set_fuse_params — scene-relative TSDF voxel/truncation knobs for
+      the next streamed fuse (exposed as viewer sliders). */
 int         da_capi_abi_version(void);
+/* Set scene-relative TSDF surface-fusion knobs consumed by the NEXT
+   da_capi_points_stream whose fuse flag is set. voxel_frac: voxel edge as a fraction
+   of the reconstruction's bbox diagonal (fusion detail; <=0 => 0.004). trunc_mult:
+   truncation as a multiple of the voxel edge (merge range = 2*trunc_mult voxels;
+   <=0 => 4). Split out because da_capi_points_stream is at the purego arg ceiling. */
+void        da_capi_set_fuse_params(da_ctx* ctx, double voxel_frac, double trunc_mult);
 da_ctx*     da_capi_load(const char* gguf_path, int n_threads);  /* NULL on failure */
 /* Load a NESTED metric model from its two branches: the anyview (GIANT) GGUF and
    the metric (ViT-L + DPT/sky) GGUF. The returned ctx runs the nested metric

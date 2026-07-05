@@ -29,6 +29,8 @@ type capi struct {
 		ptSize float32, budget int32, icpRefine, loopClose, fuse, metric int32, fuseVoxel float64,
 		outN, outCounts, outXyz, outRgb, outRad unsafe.Pointer) int32
 	streamPoses func(ctx uintptr, outPos, outFwd, outNFrames unsafe.Pointer) int32
+	// Scene-relative TSDF fusion knobs applied to the next pointsStream fuse.
+	setFuseParams func(ctx uintptr, voxelFrac, truncMult float64)
 	gaussians func(ctx uintptr, path string,
 		outN, outXyz, outScale, outQuat, outRgb, outOpacity,
 		outIntr, outW, outH unsafe.Pointer) int32
@@ -50,6 +52,7 @@ func openCAPI(libPath string) (*capi, error) {
 	purego.RegisterLibFunc(&a.pointsMulti, h, "da_capi_points_multi")
 	purego.RegisterLibFunc(&a.pointsStream, h, "da_capi_points_stream")
 	purego.RegisterLibFunc(&a.streamPoses, h, "da_capi_stream_last_poses")
+	purego.RegisterLibFunc(&a.setFuseParams, h, "da_capi_set_fuse_params")
 	purego.RegisterLibFunc(&a.gaussians, h, "da_capi_gaussians")
 	return a, nil
 }
@@ -153,10 +156,13 @@ func b2i32(b bool) int32 {
 // loopClose (loop closure + Sim3 pose-graph, task C), and fuse (final voxel/surface
 // fusion, task A) with cell fuseVoxel metres (<=0 => default).
 func (a *capi) PointsStream(ctx uintptr, paths []string, chunk, overlap int, confPct float64, ptSize float32, budget int,
-	icpRefine, loopClose, fuse, metric bool, fuseVoxel float64) (*Cloud, error) {
+	icpRefine, loopClose, fuse, metric bool, fuseVoxel, fuseVoxelFrac, fuseTruncMult float64) (*Cloud, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no images")
 	}
+	// Scene-relative TSDF fusion knobs for this bake's fuse pass (0 => C-side default).
+	// Set before the stream call; consumed inside da_capi_points_stream when fuse is on.
+	a.setFuseParams(ctx, fuseVoxelFrac, fuseTruncMult)
 	cs := make([][]byte, len(paths))
 	pp := make([]*byte, len(paths))
 	for i, s := range paths {

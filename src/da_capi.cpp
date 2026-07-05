@@ -27,6 +27,10 @@ struct da_ctx {
     // axes, 3F each). da_capi_points_stream is at the purego arg-count ceiling, so these
     // are retrieved via da_capi_stream_last_poses instead of as out-params.
     std::vector<float> frame_pos, frame_fwd;
+    // Scene-relative TSDF fusion knobs for the next da_capi_points_stream (set via
+    // da_capi_set_fuse_params, which dodges the stream's arg-count ceiling). 0 => the
+    // fuse_tsdf defaults (voxel = 0.4% of bbox diag, truncation = 4 voxels).
+    double fuse_voxel_frac = 0.0, fuse_trunc_mult = 0.0;
 };
 
 static char* dup_cstr(const std::string& s){
@@ -81,7 +85,18 @@ static bool capi_run_nested(da_ctx* c, const char* image_path,
 }
 
 extern "C" {
-int da_capi_abi_version(void){ return 9; }
+int da_capi_abi_version(void){ return 10; }
+
+// Scene-relative TSDF fusion knobs applied by the NEXT da_capi_points_stream when
+// its fuse flag is set. voxel_frac = voxel edge as a fraction of the bbox diagonal
+// ("fusion detail"); trunc_mult = truncation as a multiple of the voxel ("merge
+// range", max merged gap = 2*trunc_mult voxels). Either <=0 keeps the built-in
+// default. Split out from da_capi_points_stream, which is at the purego arg ceiling.
+void da_capi_set_fuse_params(da_ctx* c, double voxel_frac, double trunc_mult){
+    if (!c) return;
+    c->fuse_voxel_frac = voxel_frac;
+    c->fuse_trunc_mult = trunc_mult;
+}
 da_ctx* da_capi_load(const char* path, int n_threads){
     if (!path) return nullptr;
     auto e = da::Engine::load(path, n_threads);
@@ -406,7 +421,9 @@ int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
     // the truncation band (max merge gap = 2*trunc) defaults to 4 voxels inside.
     if (fuse != 0){
         da::TsdfParams tp;
-        tp.voxel = (float)fuse_voxel_m;   // <=0 => fuse_tsdf derives ~0.4% of bbox diag
+        tp.voxel = (float)fuse_voxel_m;   // absolute override (harness); <=0 => use frac
+        tp.voxel_frac = (float)c->fuse_voxel_frac;   // scene-relative "detail" knob
+        tp.trunc_mult = (float)c->fuse_trunc_mult;   // scene-relative "merge range" knob
         long pre = 0; for (int cc : sc.counts) pre += cc;
         size_t pre_pts = sc.radius.size();
         auto t_fuse0 = std::chrono::steady_clock::now();

@@ -21,12 +21,20 @@
 namespace da {
 
 struct TsdfParams {
-    // Voxel edge (world units). <=0 => derived as 0.004 * bbox-diagonal, because
-    // monocular reconstructions live at an arbitrary metric scale.
+    // Voxel edge (world units). <=0 => voxel_frac * bbox-diagonal, because monocular
+    // reconstructions live at an arbitrary metric scale (an absolute cm-voxel would
+    // either no-op or collapse the whole cloud).
     float voxel = 0.f;
+    // Voxel edge as a FRACTION of the bbox diagonal (used only when voxel<=0). This
+    // is the scene-relative "fusion detail" knob. <=0 => 0.004 (0.4% of extent).
+    float voxel_frac = 0.f;
     // Truncation half-width of the SDF band (world units). Two sheets merge only
-    // where their bands overlap, i.e. gaps up to 2*trunc collapse. <=0 => 4*voxel.
+    // where their bands overlap, i.e. gaps up to 2*trunc collapse. <=0 => trunc_mult*voxel.
     float trunc = 0.f;
+    // Truncation as a MULTIPLE of the voxel edge (used only when trunc<=0). This is
+    // the scene-relative "merge range" knob (max merged gap = 2*trunc_mult voxels).
+    // <=0 => 4.
+    float trunc_mult = 0.f;
     // PCA normal-estimation radius (world units). <=0 => 2.5*voxel.
     float normal_radius = 0.f;
     // Drop zero-crossing voxels backed by fewer than this many point deposits

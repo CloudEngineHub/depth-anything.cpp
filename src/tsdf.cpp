@@ -53,9 +53,11 @@ int fuse_tsdf(std::vector<float>& xyz, std::vector<uint8_t>& rgb,
     const double diag = std::sqrt((double)(hi[0]-lo[0])*(hi[0]-lo[0])
                                 + (double)(hi[1]-lo[1])*(hi[1]-lo[1])
                                 + (double)(hi[2]-lo[2])*(hi[2]-lo[2]));
-    double vox = (p.voxel > 0.f) ? p.voxel : (diag > 0 ? 0.004*diag : 0.03);
+    const double vfrac = (p.voxel_frac > 0.f) ? p.voxel_frac : 0.004;
+    double vox = (p.voxel > 0.f) ? p.voxel : (diag > 0 ? vfrac*diag : 0.03);
     if (!(vox > 0)) vox = 0.03;
-    double trunc = (p.trunc > 0.f) ? p.trunc : 4.0*vox;
+    const double tmult = (p.trunc_mult > 0.f) ? p.trunc_mult : 4.0;
+    double trunc = (p.trunc > 0.f) ? p.trunc : tmult*vox;
     double nr    = (p.normal_radius > 0.f) ? p.normal_radius : 2.5*vox;
     const int min_hits = std::max(1, p.min_hits);
 

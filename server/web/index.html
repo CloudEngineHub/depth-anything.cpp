@@ -147,6 +147,15 @@
         <input type="checkbox" id="surfels" checked/> Surfels</label>
     </div>
 
+    <div class="row hide" id="fuseparams">
+      <div title="Surface fusion (A) voxel edge, as a fraction of the scene size. Smaller = finer surface and more points, but a narrower merge band. Default 0.40%.">
+        <label class="fld">Fuse voxel <span id="fusedetailval">0.40%</span></label>
+        <input type="range" id="fusedetail" style="width:100%" min="0.0015" max="0.012" step="0.0005" value="0.004"/></div>
+      <div title="How far apart two doubled surfaces still merge, as a multiple of the voxel (max merged gap = 2×). Higher removes more ghosting/drift but can fuse genuinely-separate surfaces. Default 4.">
+        <label class="fld">Merge range <span id="fusetruncval">4× voxel</span></label>
+        <input type="range" id="fusetrunc" style="width:100%" min="2" max="10" step="1" value="4"/></div>
+    </div>
+
     <button class="go" id="gen" disabled>Generate</button>
   </div>
 
@@ -504,6 +513,13 @@ function setSrc(sv){ src=sv; document.querySelectorAll('#srcseg button').forEach
 document.querySelectorAll('#modeseg button').forEach(b=>b.onclick=()=>{ if(!b.disabled) setMode(b.dataset.mode); });
 document.querySelectorAll('#srcseg button').forEach(b=>b.onclick=()=>setSrc(b.dataset.src));
 
+// Surface-fusion (TSDF) sliders: reveal only when fusion is on; live value readouts.
+const fuseCb=$("fuse");
+function syncFuse(){ $("fuseparams").classList.toggle("hide",!fuseCb.checked); }
+fuseCb.onchange=syncFuse; syncFuse();
+$("fusedetail").oninput=()=>$("fusedetailval").textContent=(+$("fusedetail").value*100).toFixed(2)+"%";
+$("fusetrunc").oninput=()=>$("fusetruncval").textContent=$("fusetrunc").value+"× voxel";
+
 // ---- file pick / drop ----
 let chosen=null;
 const drop=$("drop"), fileInput=$("file");
@@ -533,6 +549,8 @@ $("gen").onclick=async()=>{
       fd.append("icp_refine",$("icprefine").checked?"1":"0");
       fd.append("loop_close",$("loopclose").checked?"1":"0");
       fd.append("fuse",$("fuse").checked?"1":"0");
+      fd.append("fuse_voxel_frac",$("fusedetail").value);
+      fd.append("fuse_trunc_mult",$("fusetrunc").value);
       fd.append("metric",$("metric").checked?"1":"0");
       fd.append("near_bias",$("nearbias").value);
       fd.append("surfels",$("surfels").checked?"1":"0");

@@ -202,6 +202,9 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 	fuse := boolForm(r.FormValue("fuse"))
 	metric := boolForm(r.FormValue("metric")) // absolute-metres output (nested model only)
 	fuseVoxel := atofDefault(r.FormValue("fuse_voxel"), 0) // 0 => C-side default (0.03 m)
+	// Scene-relative TSDF knobs (mode-agnostic; only used when fuse is on). 0 => C default.
+	fuseVoxelFrac := atofDefault(r.FormValue("fuse_voxel_frac"), 0) // voxel edge as fraction of bbox diag (detail)
+	fuseTruncMult := atofDefault(r.FormValue("fuse_trunc_mult"), 0) // truncation as multiple of voxel (merge range)
 	nearBias := atofDefault(r.FormValue("near_bias"), 0)   // 0 => uniform; >0 keeps more near, fewer far
 	surfels := boolForm(r.FormValue("surfels"))            // orient points as flat surface disks
 	voxelRes := atofDefault(r.FormValue("voxel_res"), 100) // cells across the bbox diagonal (mode=voxels)
@@ -230,7 +233,7 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 		s.bakeSem <- struct{}{}
 		defer func() { <-s.bakeSem }()
 		err := s.bakeVideo(name, vpath, jobDir, model, mode, maxFrames, chunkSize, overlap, fps, confPct, ptSize,
-			icpRefine, loopClose, fuse, metric, fuseVoxel, nearBias, surfels, voxelRes)
+			icpRefine, loopClose, fuse, metric, fuseVoxel, fuseVoxelFrac, fuseTruncMult, nearBias, surfels, voxelRes)
 		s.jobsMu.Lock()
 		j := s.jobs[name]
 		if err != nil {
@@ -246,7 +249,7 @@ func (s *server) handleSceneFromVideo(w http.ResponseWriter, r *http.Request) {
 
 // bakeVideo: ffmpeg -> frames -> DA3 -> acc_*.splat + thumbnails + manifest.
 func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, chunkSize, overlap int, fps, confPct float64, ptSize float32,
-	icpRefine, loopClose, fuse, metric bool, fuseVoxel, nearBias float64, surfels bool, voxelRes float64) error {
+	icpRefine, loopClose, fuse, metric bool, fuseVoxel, fuseVoxelFrac, fuseTruncMult, nearBias float64, surfels bool, voxelRes float64) error {
 	framesDir := filepath.Join(jobDir, "frames")
 	_ = os.RemoveAll(framesDir)
 	_ = os.MkdirAll(framesDir, 0o755)
@@ -351,7 +354,7 @@ func (s *server) bakeVideo(name, vpath, jobDir, model, mode string, maxFrames, c
 			// Metric output only makes sense for a nested (metric-capable) model; the
 			// C side would reject metric on a plain pose model, so gate it here.
 			c, e := s.api.PointsStream(ctx, sel, chunkSize, overlap, confPct, ptSize, s.maxSplats,
-				icpRefine, loopClose, fuse, metric && mi.Metric, fuseVoxel)
+				icpRefine, loopClose, fuse, metric && mi.Metric, fuseVoxel, fuseVoxelFrac, fuseTruncMult)
 			if e != nil {
 				return e
 			}
