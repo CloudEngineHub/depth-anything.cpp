@@ -97,8 +97,8 @@
       <input type="range" id="steprange" min="0" max="0" value="0"/>
       <span id="stepnum" style="color:#8b93a1;font-size:11px">—</span>
       <label id="brightwrap" title="Viewer brightness — raise to compensate for cube face-shading in voxel mode (overbright)."
-             style="display:flex;align-items:center;gap:4px;color:#8b93a1;font-size:11px;white-space:nowrap">
-        ☀<input type="range" id="brightness" min="0.5" max="3" step="0.05" value="1" style="width:78px"/></label>
+             style="flex-basis:100%;display:flex;align-items:center;gap:6px;color:#8b93a1;font-size:11px">
+        ☀<input type="range" id="brightness" min="0.5" max="3" step="0.05" value="1" style="flex:1;min-width:0"/></label>
     </div>
   </div>
 
@@ -642,7 +642,7 @@ async function openScene(name){
   await showStep(stepI,true);
 }
 async function showStep(i,reframe){ stepI=i; $("steprange").value=i; const st=steps[i];
-  $("stepnum").textContent=`${st.n}${st.label?" · "+st.label:""}`;
+  $("stepnum").textContent=`${st.n}`;   // just the frame number; keeps the row short + stable
   const url=`/scenes-assets/${curScene}/${st.splat}?v=${curBust}`;
   if(url!==curSplatURL){
     // New scenes share ONE cloud file across all steps -> load once, then only the reveal
