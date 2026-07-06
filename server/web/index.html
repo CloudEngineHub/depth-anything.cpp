@@ -96,6 +96,9 @@
       <button id="flybtn" title="Flythrough: move the camera along the capture path as the slider reveals frames" disabled>🎥</button>
       <input type="range" id="steprange" min="0" max="0" value="0"/>
       <span id="stepnum" style="color:#8b93a1;font-size:11px">—</span>
+      <label id="brightwrap" title="Viewer brightness — raise to compensate for cube face-shading in voxel mode (overbright)."
+             style="display:flex;align-items:center;gap:4px;color:#8b93a1;font-size:11px;white-space:nowrap">
+        ☀<input type="range" id="brightness" min="0.5" max="3" step="0.05" value="1" style="width:78px"/></label>
     </div>
   </div>
 
@@ -216,8 +219,8 @@ void main() {
   v_pos = a_corner; gl_Position = vec4(ndc+offset, clip.z/clip.w, 1.0);
 }`;
 const FRAG = `#version 300 es
-precision highp float; in vec4 v_color; in vec2 v_pos; out vec4 o;
-void main(){ float p=-dot(v_pos,v_pos); if(p<-4.0) discard; float a=exp(p)*v_color.a; o=vec4(v_color.rgb*a,a); }`;
+precision highp float; uniform float u_bright; in vec4 v_color; in vec2 v_pos; out vec4 o;
+void main(){ float p=-dot(v_pos,v_pos); if(p<-4.0) discard; float a=exp(p)*v_color.a; o=vec4(v_color.rgb*a*u_bright,a); }`;
 
 function shader(t,src){ const s=gl.createShader(t); gl.shaderSource(s,src); gl.compileShader(s);
   if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
@@ -232,7 +235,8 @@ const aCorner = gl.getAttribLocation(prog,"a_corner");
 const idxBuf = gl.createBuffer(); const aIndex = gl.getAttribLocation(prog,"a_index");
 const tex = gl.createTexture(); const TEX_W = 2048;
 const U = { proj:gl.getUniformLocation(prog,"u_proj"), view:gl.getUniformLocation(prog,"u_view"),
-  focal:gl.getUniformLocation(prog,"u_focal"), viewport:gl.getUniformLocation(prog,"u_viewport") };
+  focal:gl.getUniformLocation(prog,"u_focal"), viewport:gl.getUniformLocation(prog,"u_viewport"),
+  bright:gl.getUniformLocation(prog,"u_bright") };
 gl.uniform1i(gl.getUniformLocation(prog,"u_tex"),0);
 gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
 gl.blendFuncSeparate(gl.ONE,gl.ONE_MINUS_SRC_ALPHA,gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
@@ -259,14 +263,18 @@ void main(){
   v_shade = 0.40 + 0.60*max(dot(a_cnrm,L),0.0);
 }`;
 const CFRAG=`#version 300 es
-precision highp float; in vec3 v_rgb; in float v_shade; out vec4 o;
-void main(){ o = vec4(v_rgb*v_shade, 1.0); }`;
+precision highp float; uniform float u_bright; in vec3 v_rgb; in float v_shade; out vec4 o;
+void main(){ o = vec4(v_rgb*v_shade*u_bright, 1.0); }`;
 const cubeProg = gl.createProgram();
 gl.attachShader(cubeProg, shader(gl.VERTEX_SHADER,CVERT)); gl.attachShader(cubeProg, shader(gl.FRAGMENT_SHADER,CFRAG));
 gl.linkProgram(cubeProg);
 if(!gl.getProgramParameter(cubeProg,gl.LINK_STATUS)){ setStatus(gl.getProgramInfoLog(cubeProg),true); throw new Error("cube link"); }
 gl.useProgram(cubeProg); gl.uniform1i(gl.getUniformLocation(cubeProg,"u_tex"),0);
-const cubeU = { proj:gl.getUniformLocation(cubeProg,"u_proj"), view:gl.getUniformLocation(cubeProg,"u_view") };
+const cubeU = { proj:gl.getUniformLocation(cubeProg,"u_proj"), view:gl.getUniformLocation(cubeProg,"u_view"),
+  bright:gl.getUniformLocation(cubeProg,"u_bright") };
+// Viewer brightness/exposure (runtime): compensates for cube face-shading in voxel
+// mode (and general exposure for splats). 1 = as-authored; >1 overbrightens.
+let viewBright = 1.0;
 const aCpos = gl.getAttribLocation(cubeProg,"a_cpos"), aCnrm = gl.getAttribLocation(cubeProg,"a_cnrm");
 // 36 verts (6 faces × 2 tris), each = pos(±0.5) + outward normal. No culling, so winding is irrelevant.
 const cubeGeom = (()=>{ const V=[[-.5,-.5,-.5],[.5,-.5,-.5],[.5,.5,-.5],[-.5,.5,-.5],[-.5,-.5,.5],[.5,-.5,.5],[.5,.5,.5],[-.5,.5,.5]];
@@ -435,6 +443,7 @@ function render(){
     // Opaque, depth-tested cubes — no back-to-front sort needed.
     gl.enable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.useProgram(cubeProg);
     gl.uniformMatrix4fv(cubeU.view,false,view); gl.uniformMatrix4fv(cubeU.proj,false,proj);
+    gl.uniform1f(cubeU.bright, viewBright);
     if(aCorner>=0) gl.disableVertexAttribArray(aCorner);
     if(aIndex>=0) gl.disableVertexAttribArray(aIndex);
     gl.bindBuffer(gl.ARRAY_BUFFER,cubeBuf);
@@ -446,6 +455,7 @@ function render(){
     gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.useProgram(prog);
     gl.uniformMatrix4fv(U.view,false,view); gl.uniformMatrix4fv(U.proj,false,proj);
     gl.uniform2f(U.focal,fx,fy); gl.uniform2f(U.viewport,canvas.width,canvas.height);
+    gl.uniform1f(U.bright, viewBright);
     if(aCpos>=0) gl.disableVertexAttribArray(aCpos);
     if(aCnrm>=0) gl.disableVertexAttribArray(aCnrm);
     gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf); gl.enableVertexAttribArray(aCorner); gl.vertexAttribPointer(aCorner,2,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(aCorner,0);
@@ -644,6 +654,7 @@ async function showStep(i,reframe){ stepI=i; $("steprange").value=i; const st=st
     revealTarget = (st.npts!=null&&st.npts>0) ? Math.min(st.npts,count) : count;  // same file: ease the reveal
   }
 }
+$("brightness").oninput=()=>{ viewBright=+$("brightness").value; };  // runtime; continuous render picks it up
 $("steprange").oninput=()=>{ stopPlay(); showStep(+$("steprange").value,false); };
 $("playbtn").onclick=()=>{ if(playTimer) stopPlay(); else playFrom(stepI>=steps.length-1?0:stepI); };
 $("flybtn").onclick=()=>{ if($("flybtn").disabled) return;
