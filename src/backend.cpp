@@ -40,6 +40,7 @@ struct Backend::Impl {
     ggml_backend_sched_t sched       = nullptr;  // GPU path: schedules over {backend, cpu_backend}
     size_t               sched_nodes = 0;        // graph_size the sched was created with (recreated when a bigger graph arrives)
     bool                 use_sched   = false;    // true only when `backend` is a GPU device
+    bool                 flash_diag_logged = false; // one-time flash-attn placement diagnostic (GPU path)
     // Inputs registered by the build lambda for the in-flight compute. Copied
     // into the allocated tensors after the graph is allocated, then cleared.
     // Never overlaps across calls (compute is not re-entrant).
@@ -277,6 +278,35 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
                 need_sched = true;
                 break;
             }
+        }
+    }
+
+    // One-time diagnostic (GPU path): does the fused flash-attention node actually
+    // run on THIS device, or does the scheduler silently offload it to CPU? On
+    // Vulkan the flash kernel is gated on coopmat2 / subgroup shuffle+vote and the
+    // head-dim being a multiple of 8; when the device lacks those, supports_op()
+    // returns false and attention falls back to CPU (correct output, but the O(N^2)
+    // score matrix materializes CPU-side and the VRAM/latency win is lost). This
+    // fallback is otherwise invisible, so surface it once per backend instance.
+    if (impl_->use_sched && !impl_->flash_diag_logged) {
+        const int n_nodes = ggml_graph_n_nodes(gf);
+        int n_flash = 0, n_flash_off = 0;
+        for (int i = 0; i < n_nodes; ++i) {
+            ggml_tensor* node = ggml_graph_node(gf, i);
+            if (node->op != GGML_OP_FLASH_ATTN_EXT) continue;
+            ++n_flash;
+            if (!ggml_backend_supports_op(impl_->backend, node)) ++n_flash_off;
+        }
+        if (n_flash > 0) {
+            impl_->flash_diag_logged = true;
+            if (n_flash_off == 0)
+                DA_LOG("flash-attn: %d node(s) run on %s (fused, no N^2 score matrix)",
+                       n_flash, device_name_.c_str());
+            else
+                DA_LOG("flash-attn: %d/%d node(s) UNSUPPORTED on %s -> offloaded to CPU "
+                       "(scores materialize CPU-side; check coopmat2 / subgroup "
+                       "shuffle+vote support, or run DA_ATTN=manual)",
+                       n_flash_off, n_flash, device_name_.c_str());
         }
     }
 

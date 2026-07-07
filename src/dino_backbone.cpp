@@ -465,6 +465,17 @@ bool DinoBackbone::forward_mv_ordered(const std::vector<std::vector<float>>& vie
     const int S=(int)views_chw.size();
     const float eps=c.ln_eps;
 
+    // One-time shape diagnostic (re-fires only for a larger window, which sets the
+    // VRAM high-water mark): the cross-view/global attention runs over Ntok*S tokens
+    // in one pass, so per-frame activation memory scales with this product. Pairs
+    // with backend.cpp's flash-attn placement line to explain the frame ceiling.
+    if (S > diag_max_s_) {
+        diag_max_s_ = S;
+        DA_LOG("backbone: embed=%d heads=%d head_dim=%d depth=%d | %dx%d img, patch=%d "
+               "-> Ntok=%d/view, S=%d views -> global attn over %d tokens",
+               embed, heads, hd, (int)c.depth, W, H, patch, Ntok, S, Ntok*S);
+    }
+
     // Per-view RoPE position sets (identical across views: same patch grid).
     std::vector<float> pos_local(2*Ntok, 0.f), pos_nodiff(2*Ntok, 0.f);
     for (int t=1;t<Ntok;++t){ int idx=t-1; int row=idx/gw, col=idx%gw;
