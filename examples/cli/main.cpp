@@ -141,6 +141,13 @@ static int cmd_depth_export(const da::cli::Parsed& p, da::Engine& eng){
             std::fprintf(stderr, "error: write_colmap failed\n"); return 1; }
         std::printf("wrote COLMAP model (%s) to %s\n", p.colmap_binary ? "bin" : "txt", p.output_colmap.c_str());
     }
+    // Pose is already computed for the glb/colmap export above; honor --pose here
+    // too (previously silently dropped when --glb/--colmap were present).
+    if (!p.output_pose.empty()){
+        if (!da::write_pose_json(p.output_pose, ext, intr)){
+            std::fprintf(stderr, "error: write pose json failed\n"); return 1; }
+        std::printf("wrote %s\n", p.output_pose.c_str());
+    }
     if (!p.output_pfm.empty()) da::write_pfm(p.output_pfm, depth, H, W);
     if (!p.output_png.empty()) da::write_depth_png(p.output_png, depth, H, W, p.invert);
     return 0;
