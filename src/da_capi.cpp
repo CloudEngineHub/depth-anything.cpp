@@ -5,7 +5,13 @@
 #include "glb_export.hpp"
 #include "colmap_export.hpp"
 #include "reconstruct.hpp"
+#include "stream.hpp"
+#include "fuse.hpp"
+#include "tsdf.hpp"
+#include "common.hpp"
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,7 +20,18 @@
 #include <utility>
 #include <vector>
 
-struct da_ctx { std::unique_ptr<da::Engine> engine; std::string last_error; };
+struct da_ctx {
+    std::unique_ptr<da::Engine> engine;
+    std::string last_error;
+    // Per-frame capture poses from the most recent da_capi_points_stream call (OpenCV
+    // axes, 3F each). da_capi_points_stream is at the purego arg-count ceiling, so these
+    // are retrieved via da_capi_stream_last_poses instead of as out-params.
+    std::vector<float> frame_pos, frame_fwd;
+    // Scene-relative TSDF fusion knobs for the next da_capi_points_stream (set via
+    // da_capi_set_fuse_params, which dodges the stream's arg-count ceiling). 0 => the
+    // fuse_tsdf defaults (voxel = 0.4% of bbox diag, truncation = 4 voxels).
+    double fuse_voxel_frac = 0.0, fuse_trunc_mult = 0.0;
+};
 
 static char* dup_cstr(const std::string& s){
     char* p = (char*)std::malloc(s.size()+1);
@@ -68,7 +85,18 @@ static bool capi_run_nested(da_ctx* c, const char* image_path,
 }
 
 extern "C" {
-int da_capi_abi_version(void){ return 4; }
+int da_capi_abi_version(void){ return 10; }
+
+// Scene-relative TSDF fusion knobs applied by the NEXT da_capi_points_stream when
+// its fuse flag is set. voxel_frac = voxel edge as a fraction of the bbox diagonal
+// ("fusion detail"); trunc_mult = truncation as a multiple of the voxel ("merge
+// range", max merged gap = 2*trunc_mult voxels). Either <=0 keeps the built-in
+// default. Split out from da_capi_points_stream, which is at the purego arg ceiling.
+void da_capi_set_fuse_params(da_ctx* c, double voxel_frac, double trunc_mult){
+    if (!c) return;
+    c->fuse_voxel_frac = voxel_frac;
+    c->fuse_trunc_mult = trunc_mult;
+}
 da_ctx* da_capi_load(const char* path, int n_threads){
     if (!path) return nullptr;
     auto e = da::Engine::load(path, n_threads);
@@ -120,33 +148,6 @@ int da_capi_pose_path(da_ctx* c, const char* image_path, float out_ext[12], floa
     if (out_intr) std::memcpy(out_intr, intr.data(),  9 * sizeof(float));
     return 0;
 }
-float* da_capi_depth_pose_multi(da_ctx* c, const char** image_paths, int n_images,
-                                int* out_h, int* out_w, int* out_n,
-                                float* out_ext, float* out_intr){
-    if (!c || !c->engine || !image_paths || n_images <= 0){ if (c) c->last_error = "depth_multi: bad args"; return nullptr; }
-    std::vector<da::Image> imgs(n_images);
-    for (int i = 0; i < n_images; ++i){
-        if (!image_paths[i] || !da::load_image_rgb(image_paths[i], imgs[i])){
-            c->last_error = "depth_multi: load image failed"; return nullptr;
-        }
-    }
-    std::vector<da::ViewResult> views; int H = 0, W = 0;
-    if (!c->engine->depth_pose_multi(imgs, views, H, W)){ c->last_error = "depth_multi: failed"; return nullptr; }
-    const int n = (int)views.size();
-    const size_t per = (size_t)H * W;
-    float* p = (float*)std::malloc((size_t)n * per * sizeof(float));
-    if (!p){ c->last_error = "depth_multi: oom"; return nullptr; }
-    for (int i = 0; i < n; ++i){
-        std::memcpy(p + (size_t)i * per, views[i].depth.data(), per * sizeof(float));
-        if (out_ext)  std::memcpy(out_ext  + (size_t)i * 12, views[i].ext.data(),  12 * sizeof(float));
-        if (out_intr) std::memcpy(out_intr + (size_t)i * 9,  views[i].intr.data(),  9 * sizeof(float));
-    }
-    if (out_h) *out_h = H;
-    if (out_w) *out_w = W;
-    if (out_n) *out_n = n;
-    return p;
-}
-
 // Shared single-image export prep: run native depth+pose, capture processed RGB,
 // build N=1 exporter inputs. Returns false (with c->last_error set) on failure.
 static bool capi_export_prep(da_ctx* c, const char* image_path,
@@ -300,4 +301,259 @@ int da_capi_points(da_ctx* c, const char* image_path, float conf_thresh,
     return 0;
 }
 void da_capi_free_bytes(unsigned char* p){ std::free(p); }
+
+int da_capi_points_multi(da_ctx* c, const char** paths, int n_images,
+                         double conf_pct, float point_size,
+                         int* out_n, int* out_counts,
+                         float** out_xyz, unsigned char** out_rgb, float** out_radius){
+    if (out_xyz) *out_xyz = nullptr;
+    if (out_rgb) *out_rgb = nullptr;
+    if (out_radius) *out_radius = nullptr;
+    if (!c || !c->engine || !paths || n_images <= 0){ if (c) c->last_error = "points_multi: bad args"; return -1; }
+    if (c->engine->is_mono() || c->engine->is_da2()){
+        c->last_error = "points_multi: model has no camera pose; use a DualDPT DA3 model"; return -1; }
+    if (!(point_size > 0.f)) point_size = 1.f;
+
+    std::vector<da::Image> imgs(n_images);
+    for (int i = 0; i < n_images; ++i){
+        if (!paths[i] || !da::load_image_rgb(paths[i], imgs[i])){ c->last_error = "points_multi: load image failed"; return -1; }
+    }
+    std::vector<da::ViewResult> views; int H = 0, W = 0;
+    if (!c->engine->depth_pose_multi(imgs, views, H, W)){ c->last_error = "points_multi: depth_pose_multi failed"; return -1; }
+    const int N = (int)views.size();
+    const size_t plane = (size_t)H * (size_t)W;
+
+    std::vector<float> depth_all; depth_all.reserve((size_t)N * plane);
+    std::vector<float> conf_all;  conf_all.reserve((size_t)N * plane);
+    std::vector<std::array<float,9>>  K(N);
+    std::vector<std::array<float,16>> E(N);
+    std::vector<std::vector<uint8_t>> rgb_store(N);
+    std::vector<const uint8_t*>       images_u8(N);
+    bool have_conf = true;
+    for (int i = 0; i < N; ++i){
+        depth_all.insert(depth_all.end(), views[i].depth.begin(), views[i].depth.end());
+        if (views[i].conf.size() == plane) conf_all.insert(conf_all.end(), views[i].conf.begin(), views[i].conf.end());
+        else have_conf = false;
+        K[i] = views[i].intr;
+        std::array<float,16> e4{}; for (int k = 0; k < 12; ++k) e4[k] = views[i].ext[k];
+        e4[12] = 0.f; e4[13] = 0.f; e4[14] = 0.f; e4[15] = 1.f; E[i] = e4;
+        // Capture the processed RGB (same resize policy depth_pose_multi used) for
+        // per-point colour; preprocess_real fills rgb_store directly.
+        da::Preprocessed pp;
+        if (!da::preprocess_real(imgs[i], c->engine->config(), pp, &rgb_store[i]) || pp.H != H || pp.W != W){
+            c->last_error = "points_multi: preprocess color mismatch"; return -1; }
+        images_u8[i] = rgb_store[i].data();
+    }
+    if (!have_conf) conf_all.clear();
+    float conf_thr = -1e30f;
+    if (have_conf){
+        if (conf_pct < 0) conf_pct = 0; if (conf_pct > 100) conf_pct = 100;
+        conf_thr = (float)da::percentile_linear(conf_all, conf_pct);
+    }
+
+    da::WorldPoints wp = da::back_project(depth_all, conf_all, K, E, images_u8, H, W, N, conf_thr);
+    const size_t np = wp.xyz.size() / 3;
+    if (np == 0){ c->last_error = "points_multi: no points survived (raise conf_pct or check parallax)"; return -1; }
+
+    float* xyz = (float*)std::malloc(np * 3 * sizeof(float));
+    unsigned char* rgb = (unsigned char*)std::malloc(np * 3);
+    float* rad = (float*)std::malloc(np * sizeof(float));
+    if (!xyz || !rgb || !rad){ std::free(xyz); std::free(rgb); std::free(rad); c->last_error = "points_multi: oom"; return -1; }
+    if (out_counts) for (int i = 0; i < n_images; ++i) out_counts[i] = 0;
+    for (size_t j = 0; j < np; ++j){
+        xyz[3*j+0] = wp.xyz[3*j+0]; xyz[3*j+1] = wp.xyz[3*j+1]; xyz[3*j+2] = wp.xyz[3*j+2];
+        rgb[3*j+0] = wp.rgb[3*j+0]; rgb[3*j+1] = wp.rgb[3*j+1]; rgb[3*j+2] = wp.rgb[3*j+2];
+        int f = wp.frame[j], u = wp.u[j], v = wp.v[j];
+        float d = depth_all[(size_t)f * plane + (size_t)v * W + (size_t)u];
+        float fx = K[f][0], fy = K[f][4];
+        float rr = 0.5f * (d / fx + d / fy) * point_size;
+        if (!(rr > 0.f) || !std::isfinite(rr)) rr = 1e-4f;
+        rad[j] = rr;
+        if (out_counts && f >= 0 && f < n_images) out_counts[f]++;
+    }
+    if (out_xyz) *out_xyz = xyz; else std::free(xyz);
+    if (out_rgb) *out_rgb = rgb; else std::free(rgb);
+    if (out_radius) *out_radius = rad; else std::free(rad);
+    if (out_n) *out_n = (int)np;
+    return 0;
+}
+
+int da_capi_points_stream(da_ctx* c, const char** image_paths, int n_images,
+                          int chunk_size, int overlap, double conf_pct,
+                          float point_size, int global_budget,
+                          int icp_refine, int loop_close, int fuse, int metric,
+                          double fuse_voxel_m,
+                          int* out_n, int* out_counts,
+                          float** out_xyz, unsigned char** out_rgb, float** out_radius){
+    if (out_xyz) *out_xyz = nullptr;
+    if (out_rgb) *out_rgb = nullptr;
+    if (out_radius) *out_radius = nullptr;
+    if (c){ c->frame_pos.clear(); c->frame_fwd.clear(); }
+    if (!c || !c->engine || !image_paths || n_images <= 0){ if (c) c->last_error = "points_stream: bad args"; return -1; }
+    if (c->engine->is_mono() || c->engine->is_da2()){
+        c->last_error = "points_stream: model has no camera pose; use a DualDPT DA3 model"; return -1; }
+
+    std::vector<std::string> paths(n_images);
+    for (int i = 0; i < n_images; ++i){
+        if (!image_paths[i]){ c->last_error = "points_stream: null path"; return -1; }
+        paths[i] = image_paths[i];
+    }
+    da::StreamParams sp;
+    if (chunk_size > 0) sp.chunk_size = chunk_size;
+    sp.overlap = overlap;             // clamped inside stream_points
+    sp.conf_pct = conf_pct;
+    if (point_size > 0.f) sp.point_size = point_size;
+    sp.global_budget = global_budget;
+    sp.icp_refine = (icp_refine != 0);   // task B
+    sp.loop_close = (loop_close != 0);   // task C
+    sp.metric     = (metric != 0);       // absolute-metres rescale (nested engine only)
+    if (sp.metric && !c->engine->is_nested()){
+        c->last_error = "points_stream: metric requires a nested (anyview+metric) model; load via da_capi_load_nested";
+        return -1; }
+
+    da::StreamCloud sc;
+    if (!da::stream_points(*c->engine, paths, c->engine->config(), sp, sc, c->last_error)) return -1;
+
+    // Task A: optional final surface fusion. A normal-space TSDF (src/tsdf.cpp)
+    // collapses doubled/misaligned sheets into a single zero-crossing surface —
+    // unlike a plain voxel downsample, which keeps both sheets when their gap
+    // exceeds a cell. fuse_voxel_m sets the voxel edge (0 => scene-relative default);
+    // the truncation band (max merge gap = 2*trunc) defaults to 4 voxels inside.
+    if (fuse != 0){
+        da::TsdfParams tp;
+        tp.voxel = (float)fuse_voxel_m;   // absolute override (harness); <=0 => use frac
+        tp.voxel_frac = (float)c->fuse_voxel_frac;   // scene-relative "detail" knob
+        tp.trunc_mult = (float)c->fuse_trunc_mult;   // scene-relative "merge range" knob
+        const int F = (int)sc.counts.size();
+        const size_t pre_pts = sc.radius.size();
+        // Per-input-point capture frame. The emitted cloud is frame-major, so the
+        // per-frame counts define the frame of each point index. Handing this to
+        // fuse_tsdf lets it tag each output voxel with its first-observing frame and
+        // emit FRAME-MAJOR, so the progressive/flythrough reveal (which reveals a
+        // frame prefix) still lines up after fusion.
+        std::vector<int> in_frame; in_frame.reserve(pre_pts);
+        for (int f = 0; f < F; ++f) for (int k = 0; k < sc.counts[f]; ++k) in_frame.push_back(f);
+        if (in_frame.size() != pre_pts) in_frame.clear();   // only use if it lines up
+        std::vector<int> out_frame;
+        auto t_fuse0 = std::chrono::steady_clock::now();
+        // frame_pos orients normals toward the observing camera (correct SDF sign);
+        // weights default to 1/radius inside (near/high-confidence points dominate).
+        int nf = da::fuse_tsdf(sc.xyz, sc.rgb, sc.radius, tp, nullptr, &sc.frame_pos,
+                               in_frame.empty() ? nullptr : &in_frame, &out_frame);
+        DA_LOG("stream timing: tsdf(cpu)=%.2fs  %zu->%d pts",
+               std::chrono::duration<double>(std::chrono::steady_clock::now()-t_fuse0).count(),
+               pre_pts, nf);
+        // Rebuild real per-frame counts from the fused points' first-observing frame
+        // (the cloud is now frame-major), so the reveal shows each surface as its
+        // capture frame is reached. Fall back to a proportional rescale if unavailable.
+        if ((int)out_frame.size() == nf && F > 0){
+            std::vector<int> cc(F, 0);
+            for (int f : out_frame) if (f >= 0 && f < F) cc[f]++;
+            sc.counts.swap(cc);
+        } else {
+            long pre = 0; for (int cc : sc.counts) pre += cc;
+            if (pre > 0) for (int& cc : sc.counts) cc = (int)((long long)cc * nf / pre);
+        }
+    }
+
+    const size_t np = sc.radius.size();
+    if (np == 0){ c->last_error = "points_stream: no points"; return -1; }
+
+    float* xyz = (float*)std::malloc(np * 3 * sizeof(float));
+    unsigned char* rgb = (unsigned char*)std::malloc(np * 3);
+    float* rad = (float*)std::malloc(np * sizeof(float));
+    if (!xyz || !rgb || !rad){ std::free(xyz); std::free(rgb); std::free(rad); c->last_error = "points_stream: oom"; return -1; }
+    std::memcpy(xyz, sc.xyz.data(), np * 3 * sizeof(float));
+    std::memcpy(rgb, sc.rgb.data(), np * 3);
+    std::memcpy(rad, sc.radius.data(), np * sizeof(float));
+    if (out_counts) for (int i = 0; i < n_images; ++i) out_counts[i] = (i < (int)sc.counts.size()) ? sc.counts[i] : 0;
+    if (out_xyz) *out_xyz = xyz; else std::free(xyz);
+    if (out_rgb) *out_rgb = rgb; else std::free(rgb);
+    if (out_radius) *out_radius = rad; else std::free(rad);
+    if (out_n) *out_n = (int)np;
+
+    // Stash per-frame camera poses for da_capi_stream_last_poses (flythrough). These are
+    // unaffected by fusion (it only touches points).
+    if ((int)sc.frame_pos.size() == 3 * n_images && (int)sc.frame_fwd.size() == 3 * n_images){
+        c->frame_pos = std::move(sc.frame_pos);
+        c->frame_fwd = std::move(sc.frame_fwd);
+    }
+    return 0;
+}
+
+// Retrieve the per-input-frame camera poses stashed by the most recent
+// da_capi_points_stream call (kept separate because that function is at the FFI
+// arg-count ceiling). Mallocs *out_pos[3F] (camera centre) and *out_fwd[3F] (unit view
+// direction), OpenCV world axes; sets *out_nframes = F. Free via da_capi_free_floats.
+// Returns 0 ok, -1 if no poses are available (e.g. no stream run, or all windows failed).
+int da_capi_stream_last_poses(da_ctx* c, float** out_pos, float** out_fwd, int* out_nframes){
+    if (out_pos) *out_pos = nullptr;
+    if (out_fwd) *out_fwd = nullptr;
+    if (out_nframes) *out_nframes = 0;
+    if (!c || c->frame_pos.empty() || c->frame_pos.size() != c->frame_fwd.size()){
+        if (c) c->last_error = "stream_last_poses: no poses available"; return -1; }
+    const size_t sz = c->frame_pos.size();
+    float* pos = (float*)std::malloc(sz * sizeof(float));
+    float* fwd = (float*)std::malloc(sz * sizeof(float));
+    if (!pos || !fwd){ std::free(pos); std::free(fwd); c->last_error = "stream_last_poses: oom"; return -1; }
+    std::memcpy(pos, c->frame_pos.data(), sz * sizeof(float));
+    std::memcpy(fwd, c->frame_fwd.data(), sz * sizeof(float));
+    if (out_pos) *out_pos = pos; else std::free(pos);
+    if (out_fwd) *out_fwd = fwd; else std::free(fwd);
+    if (out_nframes) *out_nframes = (int)(sz / 3);
+    return 0;
+}
+
+int da_capi_gaussians(da_ctx* c, const char* path, int* out_n,
+                      float** out_xyz, float** out_scale, float** out_quat,
+                      float** out_rgb, float** out_opacity,
+                      float* out_intr, int* out_w, int* out_h){
+    if (out_xyz) *out_xyz = nullptr;
+    if (out_scale) *out_scale = nullptr;
+    if (out_quat) *out_quat = nullptr;
+    if (out_rgb) *out_rgb = nullptr;
+    if (out_opacity) *out_opacity = nullptr;
+    if (!c || !c->engine || !path){ if (c) c->last_error = "gaussians: bad args"; return -1; }
+    da::Image img;
+    if (!da::load_image_rgb(path, img)){ c->last_error = "gaussians: load image failed"; return -1; }
+    da::Gaussians g; int H = 0, W = 0;
+    if (!c->engine->reconstruct(img, g, H, W)){
+        c->last_error = "gaussians: reconstruct failed (needs a GS model, e.g. DA3-GIANT)"; return -1; }
+    if (out_intr) for (int i = 0; i < 9; ++i) out_intr[i] = g.intr[i];
+    if (out_w) *out_w = W;
+    if (out_h) *out_h = H;
+    const int N = g.N;
+    if (N <= 0 || (int)g.means.size() < N*3 || (int)g.scales.size() < N*3 ||
+        (int)g.rotations.size() < N*4 || (int)g.opacities.size() < N || (int)g.harmonics.size() < N*3*9){
+        c->last_error = "gaussians: empty/short arrays"; return -1; }
+    const double SH_C0 = 0.28209479177387814;
+    float* xyz = (float*)std::malloc((size_t)N * 3 * sizeof(float));
+    float* scl = (float*)std::malloc((size_t)N * 3 * sizeof(float));
+    float* quat = (float*)std::malloc((size_t)N * 4 * sizeof(float));
+    float* rgb = (float*)std::malloc((size_t)N * 3 * sizeof(float));
+    float* op  = (float*)std::malloc((size_t)N * sizeof(float));
+    if (!xyz || !scl || !quat || !rgb || !op){
+        std::free(xyz); std::free(scl); std::free(quat); std::free(rgb); std::free(op);
+        c->last_error = "gaussians: oom"; return -1; }
+    // Prefer the input-photo colour baked by Engine::reconstruct; SH-DC is a
+    // near-grey flat base (see gs_adapter.hpp). Fall back to SH-DC if absent.
+    const bool have_col = (int)g.colors.size() >= N*3;
+    for (int i = 0; i < N; ++i){
+        for (int k = 0; k < 3; ++k){ xyz[3*i+k] = g.means[3*i+k]; scl[3*i+k] = g.scales[3*i+k]; }
+        for (int k = 0; k < 4; ++k) quat[4*i+k] = g.rotations[4*i+k];
+        for (int ch = 0; ch < 3; ++ch){
+            double col = have_col ? (double)g.colors[3*i+ch]
+                                  : 0.5 + SH_C0 * (double)g.harmonics[((size_t)i*3 + ch)*9 + 0];
+            rgb[3*i+ch] = (float)(col < 0 ? 0 : (col > 1 ? 1 : col));
+        }
+        op[i] = g.opacities[i];
+    }
+    if (out_xyz) *out_xyz = xyz; else std::free(xyz);
+    if (out_scale) *out_scale = scl; else std::free(scl);
+    if (out_quat) *out_quat = quat; else std::free(quat);
+    if (out_rgb) *out_rgb = rgb; else std::free(rgb);
+    if (out_opacity) *out_opacity = op; else std::free(op);
+    if (out_n) *out_n = N;
+    return 0;
+}
 }

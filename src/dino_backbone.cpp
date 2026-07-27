@@ -241,6 +241,16 @@ bool DinoBackbone::build_feats_graph(ggml_context* ctx, const std::vector<float>
 
     ggml_tensor* nw = ml_.tensor("vit.norm.weight");
     ggml_tensor* nb = ml_.tensor("vit.norm.bias");
+    if (be_.is_offloading()) {
+        // vit.norm.* are kept as host gguf tensors (no backend buffer) for the
+        // host-side layernorm used by other paths. Here they feed an IN-GRAPH
+        // layernorm, so on a GPU backend they must be device-resident: a host-only
+        // operand has no device subbuffer and crashes the op kernel (on Vulkan,
+        // ggml_vk_mul -> ggml_vk_tensor_subbuffer null-derefs; CUDA happened to
+        // tolerate it). Upload them as graph inputs so they get a device buffer.
+        nw = be_.add_graph_input_nd(ctx, pool, (const float*)nw->data, nw->ne, ggml_n_dims(nw));
+        nb = be_.add_graph_input_nd(ctx, pool, (const float*)nb->data, nb->ne, ggml_n_dims(nb));
+    }
 
     // --- prepare tokens (same graph as forward()) ---
     const int64_t ine[4]={W,H,3,1};
@@ -343,7 +353,8 @@ bool DinoBackbone::capture_local_cls(const std::vector<std::vector<float>>& view
             last = xv;
         }
         return last;
-    }, throwaway);
+    // scale the graph-node budget with the view count so large windows don't overflow it
+    }, throwaway, std::max<size_t>(Backend::kDefaultGraphNodes, Backend::kDefaultGraphNodes * ((size_t)S + 8) / 24));
     if (!ok) return false;
     cls_out.assign(S, {});
     for (int s=0;s<S;++s){
@@ -454,6 +465,17 @@ bool DinoBackbone::forward_mv_ordered(const std::vector<std::vector<float>>& vie
     const int S=(int)views_chw.size();
     const float eps=c.ln_eps;
 
+    // One-time shape diagnostic (re-fires only for a larger window, which sets the
+    // VRAM high-water mark): the cross-view/global attention runs over Ntok*S tokens
+    // in one pass, so per-frame activation memory scales with this product. Pairs
+    // with backend.cpp's flash-attn placement line to explain the frame ceiling.
+    if (S > diag_max_s_) {
+        diag_max_s_ = S;
+        DA_LOG("backbone: embed=%d heads=%d head_dim=%d depth=%d | %dx%d img, patch=%d "
+               "-> Ntok=%d/view, S=%d views -> global attn over %d tokens",
+               embed, heads, hd, (int)c.depth, W, H, patch, Ntok, S, Ntok*S);
+    }
+
     // Per-view RoPE position sets (identical across views: same patch grid).
     std::vector<float> pos_local(2*Ntok, 0.f), pos_nodiff(2*Ntok, 0.f);
     for (int t=1;t<Ntok;++t){ int idx=t-1; int row=idx/gw, col=idx%gw;
@@ -562,7 +584,8 @@ bool DinoBackbone::forward_mv_ordered(const std::vector<std::vector<float>>& vie
             }
         }
         return x;
-    }, throwaway);
+    // scale the graph-node budget with the view count so large windows don't overflow it
+    }, throwaway, std::max<size_t>(Backend::kDefaultGraphNodes, Backend::kDefaultGraphNodes * ((size_t)S + 8) / 24));
     if (!ok) return false;
 
     // Host post-process per view (matches the S=1 path, repeated per view-slice).

@@ -260,7 +260,10 @@ bool Engine::depth_pose_multi(const std::vector<Image>& imgs, std::vector<ViewRe
     H = 0; W = 0;
     for (size_t i = 0; i < imgs.size(); ++i){
         Preprocessed p;
-        if (!preprocess(imgs[i], ml_.config(), p)) { DA_LOG("depth_pose_multi: preprocess failed"); return false; }
+        // Real DA3 resize policy (longest side -> img_resize_target, round to patch),
+        // same as the single-image native path. Bounds the input resolution, so a
+        // full-res photo can't blow the graph up to tens of GB.
+        if (!preprocess_real(imgs[i], ml_.config(), p)) { DA_LOG("depth_pose_multi: preprocess failed"); return false; }
         if (i == 0) { H = p.H; W = p.W; }
         else if (p.H != H || p.W != W) { DA_LOG("depth_pose_multi: views differ in H,W"); return false; }
         views_chw.push_back(std::move(p.chw));
@@ -304,6 +307,24 @@ bool Engine::reconstruct(const Image& img, Gaussians& g, int& H, int& W){
     if (!gs.raw_gaussians(feats, p.chw, H, W, raw_gs, gs_conf)) { DA_LOG("reconstruct: gs_head failed"); return false; }
     GsAdapter ad;
     if (!ad.build(raw_gs, depth, gs_conf, ext, intr, H, W, g)) { DA_LOG("reconstruct: gs_adapter failed"); return false; }
+    g.ext = ext; g.intr = intr; g.H = H; g.W = W;  // input camera, for input-view rendering
+    // Colour each gaussian by its own source pixel (de-normalize p.chw, the exact
+    // model input). DA3's learned SH-DC colour is a near-grey flat base; the true
+    // photo colour gives a faithful input-view presentation (same convention as the
+    // point cloud). g.colors empty => callers fall back to SH-DC.
+    {
+        const auto& mean = ml_.config().img_mean;
+        const auto& std  = ml_.config().img_std;
+        if (mean.size() >= 3 && std.size() >= 3 && (int)p.chw.size() >= 3*H*W && g.N == H*W) {
+            const size_t HW = (size_t)H * W;
+            g.colors.resize((size_t)g.N * 3);
+            for (size_t pix = 0; pix < HW; ++pix)
+                for (int c = 0; c < 3; ++c) {
+                    float v = p.chw[(size_t)c*HW + pix] * std[c] + mean[c];
+                    g.colors[pix*3 + c] = v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+                }
+        }
+    }
     return true;
 }
 bool Engine::reconstruct_path(const std::string& image_path, Gaussians& g, int& H, int& W){
@@ -315,6 +336,29 @@ bool Engine::depth_pose_path(const std::string& image_path, std::vector<float>& 
     Image img; if (!load_image_rgb(image_path, img)) { DA_LOG("depth_pose: load image failed"); return false; }
     return depth_pose(img, depth, conf, ext, intr, H, W);
 }
+bool Engine::metric_branch(const Image& img, std::vector<float>& depth_raw,
+                           std::vector<float>& sky, int& H, int& W){
+    if (!metric_ml_ || !metric_be_) { DA_LOG("metric_branch: engine not loaded via load_nested"); return false; }
+    // Use the STREAMING resize policy (preprocess_real, longest side ->
+    // img_resize_target ~504), NOT the single-image depth_metric() policy
+    // (preprocess = near-full-res). Two reasons: (1) the raw metric depth must be
+    // pixel-aligned with the multi-view anyview depth that depth_pose_multi()
+    // already produced (same preprocess_real), so a per-pixel least-squares scale
+    // is valid; (2) full-res would need a ~6 GB ViT-L compute buffer on top of the
+    // giant's ~6.8 GB, blowing a 16 GB card — at 504 the pair fits comfortably.
+    Preprocessed p;
+    if (!preprocess_real(img, ml_.config(), p)) { DA_LOG("metric_branch: preprocess_real failed"); return false; }
+    H = p.H; W = p.W;
+    DinoBackbone bb(*metric_ml_, *metric_be_);
+    std::vector<std::vector<float>> feats_m, cams_m;
+    if (!bb.forward(p.chw, H, W, feats_m, cams_m)) { DA_LOG("metric_branch: backbone failed"); return false; }
+    DptHead head(*metric_ml_, *metric_be_);
+    if (!head.depth_sky(feats_m, H, W, depth_raw, sky)) { DA_LOG("metric_branch: depth_sky failed"); return false; }
+    // The metric branch applies its own sky-fill inside da3_metric(x) before alignment.
+    NestedAligner::process_mono_sky(depth_raw, sky);
+    return true;
+}
+
 bool Engine::depth_metric(const Image& img, NestedOut& out, int& H, int& W){
     if (!metric_ml_ || !metric_be_) { DA_LOG("depth_metric: engine not loaded via load_nested"); return false; }
     // Both branches consume the SAME preprocessed input x (da3.py NestedDepthAnything3Net).

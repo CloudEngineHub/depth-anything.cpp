@@ -50,5 +50,8 @@ private:
     // saddle_balanced reference-view selection from per-view cls features.
     int select_reference_view_saddle(const std::vector<std::vector<float>>& cls, int embed) const;
     ModelLoader& ml_; Backend& be_;
+    // Largest view-count logged by the one-time shape diagnostic so far; the log
+    // re-fires only when a bigger window arrives (that window sets the VRAM peak).
+    int diag_max_s_ = 0;
 };
 }

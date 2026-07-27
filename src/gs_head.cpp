@@ -2,6 +2,7 @@
 #include "dpt_blocks.hpp"
 #include "uv_posembed.hpp"
 #include "ggml_extend.hpp"
+#include "common.hpp"
 #include <cmath>
 #include <string>
 
@@ -43,6 +44,14 @@ bool GsHead::raw_gaussians(const std::vector<std::vector<float>>& feats,
     for (const auto& f : feats)
         if ((int)f.size() != N * C) return false;
     if ((int)image_chw.size() != 3 * H * W) return false;
+
+    // The GSDPT refinenet fusion sizes are fixed for a 16x16 patch grid (a 224x224
+    // input). Any other resolution mismatches those hardcoded sizes and would abort
+    // deep in ggml; fail cleanly so callers can resize to 224x224 and retry.
+    if (pw != 16 || ph != 16) {
+        DA_LOG("gs_head: GS reconstruction needs a 224x224 input (16x16 patches); got %dx%d (%dx%d patches)", W, H, pw, ph);
+        return false;
+    }
 
     auto t = [&](const std::string& n) { return ml_.tensor(n); };
 

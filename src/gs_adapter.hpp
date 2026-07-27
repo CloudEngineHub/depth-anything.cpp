@@ -13,6 +13,17 @@ struct Gaussians {
     std::vector<float> rotations;  // [N*4]   wxyz (pixel*4 + c)
     std::vector<float> harmonics;  // [N*3*9]      (pixel*3 + color)*9 + coeff
     std::vector<float> opacities;  // [N]
+    // Optional per-gaussian input-photo RGB in [0,1] (pixel*3 + color), filled by
+    // Engine::reconstruct from the processed image. DA3's learned SH-DC colour is a
+    // deliberately flat, near-grey base (higher SH bands masked x0.025), so for the
+    // single-image input-view presentation we colour each gaussian by its own source
+    // pixel -- same convention as the point cloud. Empty => fall back to SH-DC.
+    std::vector<float> colors;     // [N*3]
+    // Input camera (from the model's pose head), so the demo can render the
+    // gaussians from the exact viewpoint they composite into.
+    std::array<float,12> ext{};    // world->camera 3x4 (w2c), row-major
+    std::array<float,9>  intr{};   // K 3x3 (pixel units at processed W,H), row-major
+    int H = 0, W = 0;              // processed resolution the gaussians live at
 };
 
 // GaussianAdapter: pure host math (NO learned weights). Converts the GSDPT
