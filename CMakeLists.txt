@@ -85,10 +85,20 @@ target_include_directories(depthanything
 # but our library target does not, so enable them for just winograd.cpp when the
 # host compiler supports them (falls back to a scalar path otherwise).
 include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-mavx512f" DA_HAS_AVX512F)
-if(DA_HAS_AVX512F)
-    set_source_files_properties(src/winograd.cpp PROPERTIES
-        COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mfma")
+if(MSVC)
+    # MSVC spells it /arch:AVX512 (implies BW/DQ/VL + FMA) and defines
+    # __AVX512F__ under it, so the same intrinsics path lights up.
+    check_cxx_compiler_flag("/arch:AVX512" DA_HAS_AVX512F)
+    if(DA_HAS_AVX512F)
+        set_source_files_properties(src/winograd.cpp PROPERTIES
+            COMPILE_OPTIONS "/arch:AVX512")
+    endif()
+else()
+    check_cxx_compiler_flag("-mavx512f" DA_HAS_AVX512F)
+    if(DA_HAS_AVX512F)
+        set_source_files_properties(src/winograd.cpp PROPERTIES
+            COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mfma")
+    endif()
 endif()
 target_link_libraries(depthanything PUBLIC ggml)
 
